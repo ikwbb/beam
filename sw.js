@@ -1,7 +1,7 @@
 // Bump this version whenever a bundled asset changes. Each release stays together
 // until its tabs close, so an update cannot replace a worker during a transfer.
 const CACHE_PREFIX = `beam:${self.registration.scope}:`;
-const CACHE = `${CACHE_PREFIX}v3`;
+const CACHE = `${CACHE_PREFIX}v4`;
 const HOME = new URL('./', self.registration.scope).href;
 const INDEX = new URL('./index.html', HOME).href;
 const ASSETS = [

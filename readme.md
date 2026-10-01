@@ -15,7 +15,17 @@ Start with the defaults: one code, balanced density, 10 fps. For more speed, ope
 
 ## Run or host
 
-The application lives directly in the repository root: plain HTML, CSS, JavaScript, and a bundled WebAssembly decoder. No build or package installation is needed.
+The application lives directly in the repository root. No build or package installation is needed to use the checked-in files.
+
+**Open the HTML directly:** double-click `index.html`; it opens the included `standalone.html`. You can also open or copy `standalone.html` by itself. This version contains the styles, QR encoder, decoder/WASM, and worker code, so it works without a server or an initial online visit. Browser camera support for local files varies; use the localhost option below if your browser restricts it.
+
+**Use Python:** from the directory containing `index.html`, run:
+
+```sh
+python -m http.server
+```
+
+Open `http://localhost:8000` on that computer. The unmodified Python standard-library server is enough: no special headers, packages, or backend are required. To listen only on that computer, add `--bind 127.0.0.1`.
 
 For GitHub Pages, push these files to `master`, then select **Settings → Pages → Deploy from a branch → master → / (root) → Save**. The root `.nojekyll` file lets GitHub serve the bundled assets directly. All app URLs are relative, so both `https://user.github.io/beam/` and a custom domain work. See [GitHub's publishing-source instructions](https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site).
 
@@ -25,11 +35,13 @@ For a local desktop, Node 20+ can serve the files:
 npm start
 ```
 
-Then open `http://localhost:8080` on that computer. The included development server intentionally binds to loopback. For a second device, serve the static files at an HTTPS address that it can reach or run a local server on that device. `http://192.168.x.x` does not normally qualify for camera permission. Opening `index.html` directly as `file://` is not supported because worker and module policies differ across browsers. See [MDN's camera security requirements](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia#security).
+Then open `http://localhost:8080` on that computer. For a second device, open its own copy of `standalone.html`, use GitHub Pages/HTTPS, or run a local server on that device. `http://192.168.x.x` does not normally qualify for camera permission. See [MDN's camera security requirements](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia#security).
 
 Load the app once on each device and wait for **Ready to reopen offline**. Its service worker caches the app and its runtime libraries. The transfer then works without a network connection. Browser cache eviction, private browsing, or service-worker restrictions may prevent later offline reopening. No file contents or camera frames are sent over a network.
 
 An app update waits until all Beam tabs at that address close, so a transfer keeps using one release. Reopen after closing those tabs to apply it. Each hosted path has its own cache. When releasing changes to any cached asset, bump the cache version in `sw.js`.
+
+For source changes, regenerate the portable file with `npm run build:standalone` (or `node build-standalone.mjs`). The build uses only Node's standard library and the same source files as the hosted app. Tests check that the committed portable file is current. Keep the bundled dependency licenses and corresponding source files when redistributing the project.
 
 ## Minimal protocol
 
@@ -43,7 +55,7 @@ An app update waits until all Beam tabs at that address close, so a transfer kee
 | First pass | Indexed data blocks and one XOR parity block per eight data blocks; short single-block transfers use their small data frame |
 | Loss recovery | Later passes send fresh XOR repair equations over groups of up to 16 blocks, shuffled to avoid fixed-rate sampling patterns |
 | Bounded fountain decoder | Gaussian elimination retains only independent equations; at most 16 per group, discarded as blocks are solved |
-| Late joining | File metadata repeats every 15 data/repair frames; up to 64 frames are buffered before metadata arrives |
+| Late joining | File metadata repeats after varying gaps of 13–17 data/repair frames; up to 64 frames are buffered before metadata arrives |
 | File verification | SHA-256 and the original byte length must match after decompression; only then is a download created |
 | Camera decoding | Native BarcodeDetector when available, otherwise the local zbar-wasm decoder in a Web Worker; both codes are read from one camera frame, and at most one decode is in flight |
 | Display pipeline | A second worker prepares up to six screen frames ahead of time. requestAnimationFrame displays them independently of QR generation; the displayed FPS is measured |
@@ -63,7 +75,9 @@ New senders use `B2:` followed by Base45. New receivers also accept old `B1:` tr
 
 The metadata contains the filename, original size, transmitted size, `raw`/`gzip` encoding, original-file SHA-256, and a `file`/`text` kind. Pasted text becomes exact UTF-8 bytes in `message.txt`; it is never interpreted as HTML. The final data block may be short. Parity and repair treat short blocks as zero-padded and carry a full block. A zero-byte file uses one zero-length data block. The receiver validates indices, lengths, file limits, and decompressed output size before accepting a result. Filenames are displayed as text and path separators/control characters are removed from download names.
 
-For type 3, the index's upper 16 bits select a group of 16 data blocks and the lower 16 bits select the blocks to XOR. Zero masks and bits outside the group are rejected. Later passes start with a full-rank basis randomized by elementary row operations, plus 12.5% extra repair frames. This allows lossless late joining without the initial data pass. A singleton group uses a short data frame. This is a small fountain-style random linear code, not an LT/Raptor implementation or RFC-compatible codec. It needs no acknowledgment channel or new dependency. Known blocks plus stored equation payloads are bounded by one padded copy of the transmitted file.
+For type 3, the index's upper 16 bits select a group of 16 data blocks and the lower 16 bits select the blocks to XOR. Zero masks and bits outside the group are rejected. Later passes start with a full-rank basis randomized by elementary row operations, plus 12.5% extra repair frames for full groups. This allows lossless late joining without the initial data pass. A one-block transfer keeps sending its short data frame; a one-block tail in a larger transfer also has a repair encoding. This is a small fountain-style random linear code with no acknowledgment channel or new dependency. Known blocks plus stored equation payloads are bounded by one padded copy of the transmitted file.
+
+The attached Decimen source uses a carousel of original blocks followed by fresh XOR repairs spanning the entire file. Beam applies the same recovery idea with 16-block groups and a bounded solver. Its independent repairs can reconstruct a file even when the receiver misses all original blocks. Full-file coding may complete large transfers with fewer frames, while requiring more decoder state. This implementation uses no Decimen source code and has its own wire format.
 
 The progress bar counts independent pieces, including useful equations that have not yet solved individual blocks. **FILE DATA** and **DATA RATE** count reconstructed payload bytes, so they can advance in jumps while equations combine. Duplicates never advance progress.
 
@@ -88,8 +102,8 @@ The deterministic recovery benchmark compares the old shuffled-repeat schedule w
 
 | Simulated loss | Old mean frames sent | New mean frames sent | Reduction |
 | --- | --- | --- | --- |
-| 30% independent losses | 995.5 | 574.8 | 42.3% |
-| Bursts averaging 5 frames, about 30% loss | 1,061.7 | 692.9 | 34.7% |
+| 30% independent losses | 995.5 | 585.3 | 41.2% |
+| Bursts averaging 5 frames, about 30% loss | 1,061.7 | 662.9 | 37.6% |
 
 Run `node tests/recovery-benchmark.mjs` to reproduce these results. They measure packets needed for recovery, not physical optical throughput. Fixed groups keep memory and CPU bounded; a full-file fountain codec could have different overhead, but adds complexity. The [random linear coding discussion in RFC 8681](https://www.rfc-editor.org/rfc/rfc8681.html) provides background; Beam uses its own simpler wire format.
 
@@ -105,7 +119,7 @@ Run the tests with Node 20+:
 npm test
 ```
 
-Tests cover byte-exact binary/text roundtrips, compression, empty files, legacy reception, multiple erasures, late joining, bounded repair memory, malformed packets, corruption, decompression limits, SHA-256 failure, and reset during verification. The bundled encoder and decoders roundtrip synthetic QR images at all densities, with rotation, small visual damage, and two simultaneous codes. Runtime tests cover camera cancellation, stale callbacks, wake locks, worker failures, and useful equation progress. Hosting tests cover root/subpath URLs, offline assets, update isolation, and failed installs.
+Tests cover byte-exact binary/text roundtrips, compression, empty files, legacy reception, multiple erasures, permanently missed original frames, repair-only late joining, bounded repair memory, metadata sampling, malformed packets, corruption, decompression limits, SHA-256 failure, and reset during verification. The bundled encoder and decoders roundtrip synthetic QR images at all densities, with rotation, small visual damage, and two simultaneous codes. Runtime tests cover camera cancellation, stale callbacks, wake locks, worker failures, and useful equation progress. Hosting tests cover root/subpath URLs, offline assets, update isolation, and failed installs. Portable-build tests check source freshness and perform a verified QR encode/decode transfer through both embedded workers without network requests.
 
 Synthetic image and mocked lifecycle tests are not physical-camera tests. Before relying on a pair of devices, transfer a small known file, pause and resume the receiver, then try the intended document.
 
@@ -113,6 +127,8 @@ Synthetic image and mocked lifecycle tests are not physical-camera tests. Before
 
 ```text
 index.html              Sender/receiver interface
+standalone.html         Generated portable app; opens directly, no server
+build-standalone.mjs    Dependency-free portable build from the same sources
 styles.css              Responsive styles
 app.js                  UI, camera lifecycle, display scheduler
 protocol.js             Encoding, validation, loss recovery, SHA-256
@@ -124,6 +140,7 @@ vendor/                 QR encoder/decoder and their licenses
 tests/protocol.test.mjs  Protocol and synthetic QR tests
 tests/runtime.test.mjs   Camera and worker lifecycle regressions
 tests/hosting.test.mjs   Offline and static hosting regressions
+tests/standalone.test.mjs  Portable file and embedded worker regressions
 tests/benchmark.mjs      Reproducible decoder CPU comparison
 tests/recovery-benchmark.mjs  Reproducible loss simulation
 serve.mjs                Optional zero-dependency development server

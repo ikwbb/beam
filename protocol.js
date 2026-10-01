@@ -72,7 +72,7 @@ export function parsePacket(text) {
 }
 export const hex = bytes => [...bytes].map(b => b.toString(16).padStart(2, '0')).join('');
 export async function sha256(bytes) {
-  if (!globalThis.crypto?.subtle) throw new Error('Open Beam over HTTPS or localhost to verify files.');
+  if (!globalThis.crypto?.subtle) throw new Error('This browser cannot verify files here. Open Beam over HTTPS, or run python -m http.server and open http://localhost:8000.');
   return hex(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)));
 }
 async function transform(bytes, stream, limit) {
@@ -130,9 +130,9 @@ export function makeSchedule(transfer, pass = 0, random = Math.random) {
   }
   else for (let start = 0; start < transfer.count; start += REPAIR_GROUP) {
     const size = Math.min(REPAIR_GROUP, transfer.count - start), group = start / REPAIR_GROUP;
-    // A singleton has nothing to mix. Preserve its short payload so a tiny note
-    // does not turn into a needlessly dense, block-sized QR after the first pass.
-    if (size === 1) { frames.push([1, start]); continue; }
+    // Keep single-block notes compact. A larger file's singleton tail gets a
+    // different repair QR, so even its final original QR can be missed forever.
+    if (size === 1) { frames.push(transfer.count === 1 ? [1, start] : [3, group * 65536 + 1]); continue; }
     const masks = Array.from({ length: size }, (_, i) => 1 << i);
     if (size > 1) for (let i = 0; i < size * 8; i++) {
       const target = Math.floor(random() * size);
@@ -146,9 +146,14 @@ export function makeSchedule(transfer, pass = 0, random = Math.random) {
     const j = Math.floor(random() * (i + 1)); [frames[i], frames[j]] = [frames[j], frames[i]];
   }
   const result = [[0, 0]];
+  // A fixed 16-frame metadata period can remain invisible to a camera that
+  // samples every second/fourth frame. Jitter the gap while keeping late joins fast.
+  let untilManifest = 13 + Math.floor(random() * 5);
   for (let i = 0; i < frames.length; i++) {
     result.push(frames[i]);
-    if ((i + 1) % 15 === 0 && i < frames.length - 1) result.push([0, 0]);
+    if (--untilManifest === 0 && i < frames.length - 1) {
+      result.push([0, 0]); untilManifest = 13 + Math.floor(random() * 5);
+    }
   }
   return result;
 }

@@ -294,7 +294,7 @@ function createDecodeWorker(generation = cameraGeneration) {
 async function startCamera() {
   if (cameraPending || scanning || receiver.verified || finishPending || mode !== 'receive' || document.hidden) return;
   if (!navigator.mediaDevices?.getUserMedia || !isSecureContext) {
-    message('receive-message', 'Camera access needs HTTPS or localhost. Open the app in a browser using a secure address.', true); return;
+    message('receive-message', 'This browser cannot access the camera here. Open Beam over HTTPS, or run python -m http.server and open http://localhost:8000 on this device.', true); return;
   }
   const generation = ++cameraGeneration;
   cameraPending = generation;

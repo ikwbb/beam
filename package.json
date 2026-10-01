@@ -5,6 +5,7 @@
   "description": "Browser-only optical file transfer with loss recovery and integrity verification",
   "type": "module",
   "scripts": {
+    "build:standalone": "node build-standalone.mjs",
     "test": "node --test",
     "start": "node serve.mjs"
   },

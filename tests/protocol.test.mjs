@@ -22,6 +22,24 @@ test('CRC-32 and Base45 published vectors, every byte value, and invalid encodin
   }
   for (const invalid of ['A', 'ZZ', 'ZZZ', 'ab', '00!']) assert.throws(() => unbase45(invalid));
 });
+test('B2 golden frames pin header order, checksums, and explicit repair-mask meaning', async () => {
+  const id = Uint8Array.from({ length: 8 }, (_, i) => i);
+  const golden = 'B2:IB0100KB0*M0DY0000000000100O80BB8KBU/FW';
+  assert.equal(packet(1, id, 0, 1, 384, new Uint8Array([65, 66])), golden);
+  assert.deepEqual(parsePacket(golden).payload, new Uint8Array([65, 66]));
+  const repair = packet(3, id, 65536 + 5, 19, 384, Uint8Array.from({ length: 384 }, (_, i) => i & 255));
+  const encoded = unbase45(repair.slice(3));
+  assert.equal(Buffer.from(encoded.subarray(0, 20)).toString('hex'), '0203000102030405060700010005000000130180');
+  assert.equal(Buffer.from(encoded.subarray(-4)).toString('hex'), 'c4cc414a');
+
+  const random = seededRandom(8461), bytes = Uint8Array.from({ length: 384 * 18 + 111 }, () => random() * 256);
+  const t = await prepareTransfer(file(bytes), 384);
+  assert.equal(t.meta.encoding, 'raw'); assert.equal(t.count, 19);
+  const actual = parsePacket(t.repairFrame(65536 + 5)).payload;
+  // High16 group=1 begins at block16; low16 mask=5 picks its bits0 and2.
+  const expected = Uint8Array.from({ length: 384 }, (_, i) => bytes[16 * 384 + i] ^ (bytes[18 * 384 + i] ?? 0));
+  assert.deepEqual(actual, expected);
+});
 test('lossless binary, empty files, exact block boundary, Unicode filenames, and compression', async () => {
   for (const bytes of [new Uint8Array(), new Uint8Array([0, 255]), randomBytes(720), randomBytes(1451), new TextEncoder().encode('廣東話日本語\n'.repeat(5000))]) {
     const t = await prepareTransfer(file(bytes, '測試📄.bin'));
@@ -127,6 +145,67 @@ test('independent repair equations recover multiple losses without repeating a d
   assert.equal(r.collected, t.count);
   assert.equal(r.repairs.size, 0);
   assert.deepEqual(await r.finish(), bytes);
+});
+
+test('permanently missing original QR codes recover through independent repairs under loss', async () => {
+  const random = seededRandom(3943), bytes = Uint8Array.from({ length: 384 * 64 }, () => random() * 256);
+  const t = await prepareTransfer(file(bytes), 384), r = new Receiver();
+  // Lose a whole coding group, plus several originals in other groups. These
+  // original QR codes are NEVER delivered, even during later sender passes.
+  const omitted = new Set([...Array(16).keys(), 20, 21, 42, 44]);
+  const originalsSeen = new Set();
+  r.accept(t.manifest);
+  for (let index = 0; index < t.count; index++) if (!omitted.has(index)) {
+    r.accept(t.dataFrame(index)); originalsSeen.add(index);
+  }
+  assert.equal(r.received, t.count - omitted.size);
+  const scheduleRandom = seededRandom(8719), lossRandom = seededRandom(4129);
+  for (let pass = 1; pass <= 8 && !r.complete; pass++) {
+    for (const item of makeSchedule(t, pass, scheduleRandom)) {
+      assert.ok(item[0] === 0 || item[0] === 3, 'only fresh repairs and metadata can arrive');
+      if (lossRandom() < .3) continue;
+      r.accept(frameAt(t, item));
+    }
+  }
+  assert.ok(r.complete, 'losing particular original frames forever must not prevent completion');
+  assert.ok([...omitted].every(index => !originalsSeen.has(index)));
+  assert.equal(r.recovered, omitted.size);
+  assert.deepEqual(await r.finish(), bytes);
+});
+
+test('a receiver can reconstruct a whole file from lossy repair frames without any originals', async () => {
+  for (const blocks of [64, 65]) {
+    const random = seededRandom(233), bytes = Uint8Array.from({ length: 384 * blocks - 17 }, () => random() * 256);
+    const t = await prepareTransfer(file(bytes), 384), r = new Receiver();
+    const scheduleRandom = seededRandom(5351), lossRandom = seededRandom(9949);
+    for (let pass = 1; pass <= 8 && !r.complete; pass++) {
+      for (const item of makeSchedule(t, pass, scheduleRandom)) {
+        assert.ok(item[0] === 0 || item[0] === 3, 'including the singleton final group');
+        if (lossRandom() < .3) continue;
+        r.accept(frameAt(t, item));
+      }
+    }
+    assert.ok(r.complete); assert.equal(r.recovered, t.count);
+    assert.deepEqual(await r.finish(), bytes);
+  }
+});
+
+test('metadata remains visible when a camera samples only every second or fourth frame', async () => {
+  const random = seededRandom(149), bytes = Uint8Array.from({ length: 384 * 80 }, () => random() * 256);
+  const t = await prepareTransfer(file(bytes), 384);
+  // The old fixed-gap schedule had 96 frames here, with metadata always at an
+  // index divisible by16. A camera sampling odd indices never saw a manifest.
+  for (const stride of [2, 4]) for (let phase = 0; phase < stride; phase++) {
+    const scheduleRandom = seededRandom(3331), r = new Receiver();
+    let displayed = 0;
+    for (let pass = 0; pass < 20 && !r.complete; pass++) {
+      for (const item of makeSchedule(t, pass, scheduleRandom)) {
+        if (displayed++ % stride === phase) r.accept(frameAt(t, item));
+      }
+    }
+    assert.ok(r.complete, `sample stride${stride}, phase${phase}`);
+    assert.deepEqual(await r.finish(), bytes);
+  }
 });
 
 test('every repair pass is independently decodable, including partial groups and empty files', async () => {

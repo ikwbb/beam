@@ -7,3 +7,13 @@ Beam's original application code is MIT-licensed. Bundled libraries retain their
 - `jsQR.js`: jsQR 1.4.0, Apache-2.0. Copyright and license notices are in `JSQR-LICENSE`. Source: https://github.com/cozmo/jsQR. This is a test and benchmark baseline; the application does not load it.
 
 No dependencies are loaded from a CDN at runtime. The source archives are included for modification and redistribution, and are not needed by the running browser app or its offline cache.
+
+## RaptorQ 2.0.1
+
+RaptorQ (RFC 6330), by Christopher Berner and contributors.
+Upstream: https://github.com/cberner/raptorq
+Version pinned to 2.0.1. License: Apache-2.0 (`codec/raptorq/LICENSE`).
+The unmodified crate source is distributed under `codec/raptorq/`.
+`codec/src/lib.rs` is Beam's small memory/handle ABI, not a reimplementation of
+RaptorQ. `vendor/raptorq.wasm` and the identical embedded binary in
+`raptor-wasm.js` are compiled from that source. No runtime download is needed.

@@ -1,4 +1,5 @@
-/* Beam protocol v2; also reads v1 transfers. No network or DOM access. */
+/* Shared Base45/CRC/file helpers and legacy B1/B2 compatibility.
+ * The application sends B3 RaptorQ through codec-client.js/codec-worker.js. */
 // No product size cap; sizes must remain exact JavaScript integers.
 export const MAX_FILE = Number.MAX_SAFE_INTEGER;
 export const BLOCK_SIZES = [384, 720, 1024];
@@ -76,7 +77,7 @@ export async function sha256(bytes) {
   if (!globalThis.crypto?.subtle) throw new Error('This browser cannot verify files here. Open Beam over HTTPS, or run python -m http.server and open http://localhost:8000.');
   return hex(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)));
 }
-async function transform(bytes, stream, limit) {
+export async function transform(bytes, stream, limit) {
   const reader = new Blob([bytes]).stream().pipeThrough(stream).getReader();
   const parts = []; let size = 0;
   while (true) {
@@ -90,7 +91,7 @@ async function transform(bytes, stream, limit) {
   for (const part of parts) { out.set(part, offset); offset += part.length; }
   return out;
 }
-export async function prepareTransfer(file, blockSize = 720, kind = 'file') {
+export async function preparePayload(file, blockSize = 720, kind = 'file') {
   if (!Number.isSafeInteger(file.size) || file.size < 0) throw new Error('Invalid file size.');
   if (!BLOCK_SIZES.includes(blockSize)) throw new Error('Invalid code density.');
   const original = new Uint8Array(await file.arrayBuffer());
@@ -106,6 +107,12 @@ export async function prepareTransfer(file, blockSize = 720, kind = 'file') {
   if (count > 0xffffffff) throw new Error('This file exceeds the protocol’s block address range.');
   const name = [...file.name].slice(0, 160).join('') || 'received-file';
   const meta = { name, size: original.length, packedSize: packed.length, encoding, sha256: hash, kind: kind === 'text' ? 'text' : 'file' };
+  return { id, meta, count, blockSize, packed };
+}
+
+// Legacy sender retained for protocol regression tests and migration tools.
+export async function prepareTransfer(file, blockSize = 720, kind = 'file') {
+  const { id, meta, count, packed } = await preparePayload(file, blockSize, kind);
   const manifest = packet(0, id, 0, count, blockSize, enc.encode(JSON.stringify(meta)));
   const chunks = Array.from({ length: count }, (_, i) => packed.subarray(i * blockSize, (i + 1) * blockSize));
   const repair = (start, mask) => {
@@ -114,7 +121,7 @@ export async function prepareTransfer(file, blockSize = 720, kind = 'file') {
     return out;
   };
   return {
-    id, meta, count, blockSize, manifest,
+    id, meta, count, blockSize, manifest, packed,
     dataFrame: index => packet(1, id, index, count, blockSize, chunks[index]),
     parityFrame: index => packet(2, id, index, count, blockSize, repair(index * GROUP, (1 << Math.min(GROUP, count - index * GROUP)) - 1)),
     repairFrame: index => packet(3, id, index, count, blockSize, repair((index >>> 16) * REPAIR_GROUP, index & 65535)),

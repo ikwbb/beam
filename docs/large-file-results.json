@@ -1,0 +1,38 @@
+[
+  {
+    "size": 135266321,
+    "loss": 0.1,
+    "verified": true,
+    "frames": 161710,
+    "passes": 2,
+    "prepareMs": 4127.8,
+    "wallMs": 29745,
+    "cpuMs": 51163.51,
+    "wasmHighWaterMiB": 201,
+    "peakRssMiB": 1080.7
+  },
+  {
+    "size": 135266321,
+    "loss": 0.3,
+    "verified": true,
+    "frames": 204674,
+    "passes": 2,
+    "prepareMs": 3943.2,
+    "wallMs": 29490.5,
+    "cpuMs": 29825.395,
+    "wasmHighWaterMiB": 204.4375,
+    "peakRssMiB": 1761.6
+  },
+  {
+    "size": 135266321,
+    "loss": 0.5,
+    "verified": true,
+    "frames": 292454,
+    "passes": 3,
+    "prepareMs": 3814.6,
+    "wallMs": 41635.5,
+    "cpuMs": 42275.002,
+    "wasmHighWaterMiB": 204.4375,
+    "peakRssMiB": 1913.2
+  }
+]

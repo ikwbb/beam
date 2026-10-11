@@ -7,6 +7,7 @@ const INDEX = new URL('./index.html', HOME).href;
 const ASSETS = [
   './index.html', './styles.css', './app.js', './protocol.js',
   './encode-worker.js', './decode-worker.js', './decoder.js',
+  './codec-worker.js', './codec-client.js', './raptor-protocol.js', './raptor-wasm.js', './vendor/raptorq.wasm',
   './vendor/qrcode.js', './vendor/zbar.mjs',
 ].map(path => new URL(path, HOME).href);
 

@@ -50,7 +50,7 @@ function removeImport(source, path) {
 export const scriptText = source => source.replace(/<(\/script|script|!--)/gi, '\\x3c$1');
 
 export async function renderStandalone() {
-  const paths = ['index.html', 'styles.css', 'app.js', 'protocol.js', 'encode-worker.js', 'decode-worker.js', 'decoder.js', 'vendor/qrcode.js', 'vendor/zbar.mjs', 'LICENSE', 'REFERENCE-LICENSE', 'vendor/QRCODE-LICENSE', 'vendor/ZBAR-LICENSE', 'vendor/THIRD-PARTY-NOTICES.md', 'vendor/source/README.md'];
+  const paths = ['index.html', 'styles.css', 'app.js', 'protocol.js', 'codec-client.js', 'codec-worker.js', 'raptor-protocol.js', 'raptor-wasm.js', 'codec/raptorq/LICENSE', 'encode-worker.js', 'decode-worker.js', 'decoder.js', 'vendor/qrcode.js', 'vendor/zbar.mjs', 'LICENSE', 'REFERENCE-LICENSE', 'vendor/QRCODE-LICENSE', 'vendor/ZBAR-LICENSE', 'vendor/THIRD-PARTY-NOTICES.md', 'vendor/source/README.md'];
   const values = await Promise.all(paths.map(read));
   const sources = Object.fromEntries(paths.map((path, i) => [path, values[i]]));
   const qr = stripSourceMaps(sources['vendor/qrcode.js']);
@@ -58,14 +58,19 @@ export async function renderStandalone() {
   const decoder = removeImport(sources['decoder.js'], './vendor/zbar.mjs');
   const decodeWorker = removeImport(sources['decode-worker.js'], './decoder.js');
   const decoding = `const { ${decoder.names} } = ${classicModule(sources['vendor/zbar.mjs'], 'vendor/zbar.mjs')};\nconst { ${decodeWorker.names} } = ${classicModule(decoder.code, 'decoder.js')};\n${decodeWorker.code}`;
-  const workers = { encode: encoder, decode: decoding };
+  const rqProtocol = removeImport(sources['raptor-protocol.js'], './protocol.js');
+  const rqCodec = removeImport(rqProtocol.code, './raptor-wasm.js');
+  const codecWorker = removeImport(sources['codec-worker.js'], './raptor-protocol.js');
+  const codecSource = `const { ${rqProtocol.names} } = ${classicModule(sources['protocol.js'], 'protocol.js')};\nconst { ${rqCodec.names} } = ${classicModule(sources['raptor-wasm.js'], 'raptor-wasm.js')};\nconst { ${codecWorker.names} } = ${classicModule(rqCodec.code, 'raptor-protocol.js')};\n${codecWorker.code}`;
+  const workers = { encode: encoder, decode: decoding, codec: codecSource };
   for (const [name, code] of Object.entries(workers)) new vm.Script(code, { filename: `${name}-worker.js` });
 
-  const app = removeImport(sources['app.js'], './protocol.js');
+  const app = removeImport(sources['app.js'], './codec-client.js');
+  const client = replaceOnce(sources['codec-client.js'], /new Worker\('\.\/codec-worker\.js',\{type:'module'\}\)/g, "createEmbeddedWorker('codec')", 'codec worker');
   let code = replaceOnce(app.code, /new Worker\('\.\/encode-worker\.js'\)/g, "createEmbeddedWorker('encode')", 'encoder worker');
   code = replaceOnce(code, /new Worker\('\.\/decode-worker\.js', \{ type: 'module' \}\)/g, "createEmbeddedWorker('decode')", 'decoder worker');
   code = replaceOnce(code, /^if \([^\n]*'serviceWorker' in navigator[^\n]*\) \{[\s\S]*\n\}\s*$/gm, '', 'service worker registration');
-  const main = `${qr}\n(() => {\nconst { ${app.names} } = ${classicModule(sources['protocol.js'], 'protocol.js')};
+  const main = `${qr}\n(() => {\nconst { ${app.names} } = ${classicModule(client, 'codec-client.js')};
 const workerSources = JSON.parse(document.getElementById('beam-worker-sources').textContent);
 const workerURLs = new Map();
 function createEmbeddedWorker(name) {
@@ -85,7 +90,7 @@ write('offline-state', 'Ready offline · standalone file');
   html = replaceOnce(html, /\s*<script src="\.\/vendor\/qrcode\.js" defer><\/script>/g, '', 'QR script');
   html = replaceOnce(html, /\s*<script type="module" src="\.\/app\.js"><\/script>/g, '', 'app script');
   html = replaceOnce(html, /<a href="\.\/" class="brand"/g, '<a href="#" class="brand"', 'home link');
-  const licenses = ['LICENSE', 'REFERENCE-LICENSE', 'vendor/QRCODE-LICENSE', 'vendor/ZBAR-LICENSE', 'vendor/THIRD-PARTY-NOTICES.md', 'vendor/source/README.md']
+  const licenses = ['codec/raptorq/LICENSE', 'LICENSE', 'REFERENCE-LICENSE', 'vendor/QRCODE-LICENSE', 'vendor/ZBAR-LICENSE', 'vendor/THIRD-PARTY-NOTICES.md', 'vendor/source/README.md']
     .map(path => `<h3>${path}</h3><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${escapeHTML(sources[path])}</pre>`).join('\n');
   const notices = `<details class="help"><summary>Open-source licenses and decoder source</summary><div class="help-content"><p>This portable file is generated with <code>node build-standalone.mjs</code> from Beam's application sources. To modify or replace its LGPL decoder, replace <code>vendor/zbar.mjs</code> and rebuild. Reverse engineering for debugging library modifications is not restricted.</p><p>Corresponding decoder sources and build instructions ship in <code>vendor/source/</code> with the Beam source distribution. They are also available upstream: <a href="https://github.com/undecaf/zbar-wasm/tree/c04ab59682681e27a24b36b36084806437a5d224">zbar-wasm 0.11.0</a> and <a href="https://github.com/mchehab/zbar/tree/0.23.90">ZBar 0.23.90</a>. Keep the source distribution and its license notices together when redistributing Beam.</p>${licenses}</div></details>`;
   html = replaceOnce(html, /<\/main>/g, `${notices}\n</main>`, 'main closing tag');

@@ -1,4 +1,4 @@
-import { prepareTransfer, makeSchedule, frameAt, Receiver } from './protocol.js';
+import { prepareTransfer, makeSchedule, framesAt, Receiver } from './codec-client.js';
 
 const $ = id => document.getElementById(id);
 const show = (id, visible = true) => { $(id).hidden = !visible; };
@@ -59,6 +59,7 @@ async function chooseFile(chosen, kind = 'file') {
   pauseSend();
   resetEncoder();
   const generation = ++preparation;
+  transfer?.dispose?.().catch?.(() => {});
   transfer = null; file = null; preparing = true;
   $('send-start').disabled = true; $('density').disabled = true;
   $('dropzone').classList.add('busy');
@@ -70,7 +71,7 @@ async function chooseFile(chosen, kind = 'file') {
   write('send-eta', 'Choose content to estimate transfer time.');
   try {
     const prepared = await prepareTransfer(chosen, Number($('density').value), kind);
-    if (generation !== preparation) return;
+    if (generation !== preparation) { prepared.dispose?.().catch?.(() => {}); return; }
     transfer = prepared; file = chosen; pass = 0; cursor = 0;
     schedule = makeSchedule(transfer);
     referenceModules = Math.max(...[transfer.manifest, transfer.dataFrame(0), transfer.parityFrame(0)].map(text => QRCode.create([{ data: text, mode: 'alphanumeric' }], { errorCorrectionLevel: 'M' }).modules.size));
@@ -112,7 +113,7 @@ $('code-count').onchange = () => {
   }
 };
 function invalidateInput() {
-  pauseSend(); preparation++; resetEncoder(); transfer = null; file = null; preparing = false;
+  pauseSend(); preparation++; resetEncoder(); transfer?.dispose?.().catch?.(() => {}); transfer = null; file = null; preparing = false;
   displayModules = []; show('qr-wrap', false); show('empty-code');
   $('dropzone').classList.remove('busy'); $('density').disabled = false;
   write('send-size', '—'); write('send-blocks', '—'); write('send-rate', '—');
@@ -254,14 +255,20 @@ function fillQueue() {
   }
   // A bounded queue decouples display timing from QR mask search and encoding.
   while (displayQueue.length + encodePending < (isAutoLayout() ? 2 : 6)) {
-    const texts = [], labels = [];
+    const items = [], labels = [];
     for (let i = 0; i < effectiveCodeCount(); i++) {
       if (cursor >= schedule.length) { pass++; cursor = 0; schedule = makeSchedule(transfer, pass); }
-      const item = schedule[cursor++]; texts.push(frameAt(transfer, item));
+      const item = schedule.at ? schedule.at(cursor++) : schedule[cursor++]; items.push(item);
       labels.push(item[0] === 0 ? 'File info' : item[0] === 1 ? `Block ${item[1] + 1}` : 'Repair');
     }
     encodePending++;
-    encodeWorker.postMessage({ generation: encodeGeneration, texts, label: labels.join(' + '), pass: pass + 1 });
+    const generation = encodeGeneration, worker = encodeWorker, batchPass = pass + 1;
+    framesAt(transfer, items).then(resolved => {
+      if (generation === encodeGeneration && worker === encodeWorker) worker.postMessage({ generation, texts: resolved, label: labels.join(' + '), pass: batchPass });
+    }).catch(error => {
+      if (generation !== encodeGeneration) return;
+      pauseSend(); resetEncoder(); message('send-message', `Code preparation failed: ${error.message}`, true);
+    });
   }
 }
 function tickSend(now) {
@@ -375,16 +382,16 @@ function createDecodeWorker(generation = cameraGeneration) {
   const worker = new Worker('./decode-worker.js', { type: 'module' });
   decodeWorker = worker;
   const isCurrent = () => generation === cameraGeneration && worker === decodeWorker;
-  worker.onmessage = ({ data }) => {
+  worker.onmessage = async ({ data }) => {
     if (!isCurrent() || data.generation !== cameraGeneration) return;
-    decodeBusy = false;
     if (data.error) {
       stopCamera(); message('receive-message', 'The QR decoder could not start. Use a current browser with WebAssembly enabled.', true); return;
     }
     if (scanning) {
       updateDetections(data.codes || [], data.width, data.height);
-      for (const text of data.texts) acceptFrame(text);
+      await Promise.all(data.texts.map(acceptFrame));
     }
+    if (isCurrent()) decodeBusy = false;
   };
   worker.onerror = () => {
     if (!isCurrent()) return;
@@ -502,7 +509,7 @@ function drawDetections() {
   const left = (width - detectionWidth * scale) / 2, top = (height - detectionHeight * scale) / 2;
   let beam = 0;
   for (const [index, code] of latestDetections.entries()) {
-    const isBeam = /^B[12]:/.test(code.text); if (isBeam) beam++;
+    const isBeam = /^B[123]:/.test(code.text); if (isBeam) beam++;
     const points = code.points || [];
     if (!points.length) continue;
     const xs = points.map(p => p.x), ys = points.map(p => p.y);
@@ -535,13 +542,13 @@ function scan(now) {
     Promise.resolve().then(() => {
       if (generation !== cameraGeneration || !scanning) return [];
       return nativeDetector.detect(video);
-    }).then(codes => {
+    }).then(async codes => {
       if (generation !== cameraGeneration || !scanning) return;
       updateDetections(codes.map(code => ({ text: code.rawValue, points: code.cornerPoints?.length ? code.cornerPoints : code.boundingBox ? [
         { x: code.boundingBox.x, y: code.boundingBox.y },
         { x: code.boundingBox.x + code.boundingBox.width, y: code.boundingBox.y + code.boundingBox.height },
       ] : [] })), video.videoWidth, video.videoHeight);
-      for (const code of codes) acceptFrame(code.rawValue);
+      await Promise.all(codes.map(code => acceptFrame(code.rawValue)));
     }).catch(() => {
       if (generation !== cameraGeneration) return;
       // Some implementations advertise QR but fail at runtime. Switch to the local worker.
@@ -565,10 +572,16 @@ function scan(now) {
     }
   } else decodeBusy = false;
 }
-function acceptFrame(text) {
-  if (finishPending || receiver.verified || typeof text !== 'string' || !/^B[12]:/.test(text)) return;
+async function acceptFrame(text) {
+  if (finishPending || receiver.verified || typeof text !== 'string' || !/^B[123]:/.test(text)) return;
   const before = receiver.collected;
-  const result = receiver.accept(text);
+  const current = receiver;
+  let result;
+  try { result = await current.accept(text); } catch (error) {
+    if (receiver === current) { stopCamera(); message('receive-message', error.message, true); }
+    return;
+  }
+  if (current !== receiver || finishPending || receiver.verified) return;
   if (result === 'rejected') { write('receive-note', 'A damaged frame was ignored. New repair codes will fill the gap.'); return; }
   if (result === 'foreign') { message('receive-message', 'A different transfer is in view. Resume the original signal or clear this transfer.', true); return; }
   if (result === 'waiting') { updateReceiver(); write('camera-status', 'SIGNAL FOUND'); message('receive-message', 'Signal found. Waiting for file information, which repeats automatically.'); return; }
@@ -580,7 +593,7 @@ function acceptFrame(text) {
   if (receiver.complete) completeReceive();
 }
 function updateReceiver() {
-  const r = receiver, ratio = r.count ? Math.round(100 * r.collected / r.count) : 0;
+  const r = receiver, ratio = r.count ? r.verified ? 100 : Math.min(99, Math.floor(100 * r.collected / r.count)) : 0;
   write('receive-title', r.meta?.name || 'Waiting for a file'); write('receive-file', r.meta?.name || 'No signal yet');
   write('percent', `${ratio}%`); $('progress').value = ratio;
   write('received-count', r.count ? `${r.collected.toLocaleString()} / ${r.count.toLocaleString()} pieces` : '0 pieces collected');
@@ -608,6 +621,7 @@ async function completeReceive() {
       $('received-text').value = new TextDecoder().decode(bytes);
       show('received-text-wrap'); write('copy-text', 'Copy text');
     }
+    updateReceiver();
     write('receive-eta', 'Complete');
     write('camera-status', 'FILE VERIFIED'); $('camera-status').className = 'status-label success';
     $('camera-empty').querySelector('h3').textContent = 'Every piece, in place.';
@@ -625,7 +639,7 @@ async function completeReceive() {
   } finally { if (receiver === completed) finishPending = false; }
 }
 function resetReceiver() {
-  stopCamera(); receiver = new Receiver(); finishPending = false;
+  stopCamera(); receiver.dispose?.().catch?.(() => {}); receiver = new Receiver(); finishPending = false;
   if (downloadUrl) URL.revokeObjectURL(downloadUrl); downloadUrl = null;
   $('download').removeAttribute('href'); show('download', false); show('verified', false);
   show('received-text-wrap', false); $('received-text').value = '';

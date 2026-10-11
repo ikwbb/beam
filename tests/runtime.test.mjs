@@ -60,7 +60,7 @@ function harness({ media, display, formats, detect, wakeLock, workerFailure, rec
     Uint8Array, Uint8ClampedArray, TextEncoder, TextDecoder, URL, Blob, File, console,
     MAX_FILE: Number.MAX_SAFE_INTEGER,
     prepareTransfer: async chosen => ({ manifest: 'B2:INFO', dataFrame: () => 'B2:DATA', parityFrame: () => 'B2:REPAIR', count: 1, meta: { packedSize: chosen.size } }),
-    makeSchedule: () => [[0, 0], [1, 0]], frameAt: () => 'B2:DATA',
+    makeSchedule: () => [[0, 0], [1, 0]], frameAt: () => 'B2:DATA', framesAt: async (t, items) => items.map(() => 'B2:DATA'),
     QRCode: { create: () => ({ modules: { size: 21, data: new Uint8Array(441) } }) },
   };
   if (formats || detect) sandbox.BarcodeDetector = class {
@@ -194,10 +194,10 @@ test('pre-manifest pieces can be cleared and fountain equations advance visible 
   app.click('receive-tab'); app.click('camera-start'); await flush();
   app.scan();
   const worker = app.workers[0], generation = worker.messages[0].generation;
-  worker.onmessage({ data: { texts: ['B2:piece'], generation } });
+  await worker.onmessage({ data: { texts: ['B2:piece'], generation } });
   assert.equal(app.element('clear-receive').disabled, false);
   receiver.meta = { name: 'file.txt' }; receiver.count = 4; receiver.startedAt = Date.now();
-  worker.onmessage({ data: { texts: ['B2:repair'], generation } });
+  await worker.onmessage({ data: { texts: ['B2:repair'], generation } });
   assert.equal(app.element('percent').textContent, '25%');
   assert.equal(app.element('received-count').textContent, '1 / 4 pieces');
   assert.equal(app.element('receive-bytes').textContent, '0 B');
@@ -366,7 +366,7 @@ test('auto layout fills any window with the maximum count at the selected compac
   const worker = app.workers.at(-1), request = worker.messages[0];
   assert.equal(request.texts.length, 15);
   app.element('send-stage').clientWidth = 3840; app.element('send-stage').clientHeight = 2160;
-  app.evaluate('refreshSendLayout();');
+  app.evaluate('refreshSendLayout();'); await flush();
   assert.equal(app.evaluate('activeCodeCount'), 66);
   assert.equal(worker.terminated, true);
   const current = app.workers.at(-1), next = current.messages[0];
@@ -408,7 +408,7 @@ test('signal uses the webpage without requesting browser fullscreen', async () =
   assert.equal(app.element('signal-notch').hidden, false);
   assert.equal(app.document.body.classList.contains('signal-only'), true);
   app.element('send-stage').clientWidth = 1600;
-  app.evaluate('refreshSendLayout();');
+  app.evaluate('refreshSendLayout();'); await flush();
   assert.equal(app.evaluate('running'), true);
   app.click('exit-signal');
   assert.equal(app.element('signal-notch').hidden, true);
@@ -469,4 +469,23 @@ test('notch auto-hides, reveals at the bottom edge, and stays open for hover or 
   assert.equal(zone.hidden, true); assert.equal(app.timers.size, 0);
   zone.onpointerenter({pointerType: 'mouse'});
   assert.equal(app.timers.size, 0);
+});
+
+test('visible progress stays at 99% until the complete file is verified', () => {
+  const receiver={meta:{name:'ready.bin',packedSize:1024},pending:[],count:1,collected:1,received:1,receivedBytes:1024,recovered:0,startedAt:Date.now(),complete:true,verified:false};
+  const app=harness({receiver});app.evaluate('updateReceiver();');
+  assert.equal(app.element('percent').textContent,'99%');assert.equal(app.element('progress').value,99);assert.equal(app.element('receive-eta').textContent,'Verifying file…');
+  receiver.verified=true;app.evaluate('updateReceiver();');assert.equal(app.element('percent').textContent,'100%');assert.equal(app.element('progress').value,100);
+});
+
+test('invalidating sender input disposes its prepared codec state',async()=>{
+ const app=harness();app.evaluate(`globalThis.disposalCount=0;prepareTransfer=async chosen=>({manifest:'B2:INFO',dataFrame:()=> 'B2:DATA',parityFrame:()=> 'B2:DATA',count:1,meta:{packedSize:chosen.size},dispose:async()=>{globalThis.disposalCount++;}});`);
+ await app.element('file-input').onchange({target:{files:[new File(['state'],'state.txt')]}});
+ app.evaluate('invalidateInput();');await flush();assert.equal(app.evaluate('disposalCount'),1);
+});
+test('a cancelled preparation result is disposed instead of being retained',async()=>{
+ const app=harness();app.evaluate(`globalThis.disposalCount=0;prepareTransfer=()=>new Promise(resolve=>{globalThis.resolvePreparation=resolve;});`);
+ const choose=app.element('file-input').onchange({target:{files:[new File(['pending'],'pending.txt')]}});
+ app.evaluate(`invalidateInput();resolvePreparation({dispose:async()=>{globalThis.disposalCount++;}});`);
+ await choose;await flush();assert.equal(app.evaluate('disposalCount'),1);assert.equal(app.evaluate('transfer'),null);
 });

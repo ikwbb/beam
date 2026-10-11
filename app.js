@@ -1,4 +1,4 @@
-import { prepareTransfer, makeSchedule, frameAt, Receiver, MAX_FILE } from './protocol.js';
+import { prepareTransfer, makeSchedule, frameAt, Receiver } from './protocol.js';
 
 const $ = id => document.getElementById(id);
 const show = (id, visible = true) => { $(id).hidden = !visible; };
@@ -14,12 +14,15 @@ let file = null, transfer = null, running = false, preparing = false, preparatio
 let schedule = [], cursor = 0, pass = 0, sendTimer = 0, nextDisplayAt = 0;
 let encodeWorker = null, encodeGeneration = 0, encodePending = 0, displayQueue = [], displayedAt = [];
 let receiver = new Receiver(), stream = null, scanning = false, cameraPending = 0;
+let captureSource = 'camera', screenTimer = 0;
 let decodeWorker = null, detector = null, decodeBusy = false, cameraGeneration = 0;
 let animation = 0, lastVideoTime = -1, lastScanAt = 0, finishPending = false, downloadUrl = null;
 let lastAcceptedAt = 0, wakeLock = null, wakeLockPending = false, displayModules = [];
+let activeCodeCount = 1, autoLayout = null, qrTargetSize = 320, referenceModules = 21;
+const qrCanvases = Array.from({ length: 18 }, (_, i) => $(i ? `qr-canvas-${i + 1}` : 'qr-canvas'));
 const scanCanvas = document.createElement('canvas');
 const scanContext = scanCanvas.getContext('2d', { willReadFrequently: true });
-// Start with one large target. Two codes remain available for a capable camera.
+// QR frames use the same local receiver for camera and screen capture.
 
 async function syncWakeLock() {
   if (!navigator.wakeLock) return;
@@ -64,12 +67,14 @@ async function chooseFile(chosen, kind = 'file') {
   write('send-status', 'PREPARING FILE');
   show('qr-wrap', false); show('empty-code');
   write('send-size', '—'); write('send-blocks', '—'); write('send-rate', '—');
+  write('send-eta', 'Choose content to estimate transfer time.');
   try {
-    if (chosen.size > MAX_FILE) throw new Error('Choose a file of 10 MiB or less.');
     const prepared = await prepareTransfer(chosen, Number($('density').value), kind);
     if (generation !== preparation) return;
     transfer = prepared; file = chosen; pass = 0; cursor = 0;
     schedule = makeSchedule(transfer);
+    referenceModules = Math.max(...[transfer.manifest, transfer.dataFrame(0), transfer.parityFrame(0)].map(text => QRCode.create([{ data: text, mode: 'alphanumeric' }], { errorCorrectionLevel: 'M' }).modules.size));
+    refreshSendLayout(false);
     drawCode(transfer.manifest);
     fillQueue();
     write('send-size', format(chosen.size)); write('send-blocks', transfer.count.toLocaleString());
@@ -100,7 +105,7 @@ dropzone.addEventListener('dragleave', () => dropzone.classList.remove('over'));
 dropzone.addEventListener('drop', event => { event.preventDefault(); dropzone.classList.remove('over'); chooseFile(event.dataTransfer.files[0]); });
 $('density').onchange = () => { if (file) chooseFile(file, inputMode); };
 $('code-count').onchange = () => {
-  const resume = running; pauseSend(); resetEncoder();
+  const resume = running; pauseSend(); resetEncoder(); refreshSendLayout(false);
   if (transfer) {
     try { fillQueue(); updateCeiling(); if (resume) startSend(); }
     catch (error) { resetEncoder(); message('send-message', `Code preparation failed: ${error.message}`, true); }
@@ -111,6 +116,7 @@ function invalidateInput() {
   displayModules = []; show('qr-wrap', false); show('empty-code');
   $('dropzone').classList.remove('busy'); $('density').disabled = false;
   write('send-size', '—'); write('send-blocks', '—'); write('send-rate', '—');
+  write('send-eta', 'Choose content to estimate transfer time.');
   write('send-status', 'READY WHEN YOU ARE'); write('send-frame', 'Waiting for content');
   const hasText = inputMode === 'text' && $('text-input').value.length > 0;
   $('send-start').disabled = !hasText; write('send-start', hasText ? 'Start text signal ↗' : 'Choose content to begin ↗');
@@ -133,10 +139,56 @@ $('text-input').oninput = () => {
   message('send-message', 'Ready to send this text. Start the camera on the receiving device.');
 };
 $('speed').oninput = () => { write('speed-value', `${$('speed').value} fps`); updateCeiling(); };
+function isAutoLayout() { return $('code-count').value === 'auto'; }
+function effectiveCodeCount() { return isAutoLayout() ? activeCodeCount : Number($('code-count').value) || 1; }
+function stageSpace() {
+  const stage = $('send-stage');
+  const clean = document.body.classList.contains('signal-only');
+  return { width: Math.max(1, stage.clientWidth - (clean ? 0 : 36)), height: Math.max(1, stage.clientHeight - (clean ? 0 : 110)), clean };
+}
+function refreshSendLayout(requeue = true) {
+  const previous = activeCodeCount;
+  $('qr-wrap').style.gap = '4px';
+  if (isAutoLayout()) {
+    const { width, height } = stageSpace();
+    // Display size is independent of QR module-count multiples; +/- moves in 8px steps.
+    const unit = referenceModules + 8;
+    const cell = Math.max(unit, Math.round(Math.min(qrTargetSize, width, height)));
+    const columns = Math.max(1, Math.floor((width + 4) / (cell + 4)));
+    const rows = Math.max(1, Math.floor((height + 4) / (cell + 4)));
+    autoLayout = { columns, rows, cell, count: columns * rows };
+    activeCodeCount = autoLayout.count;
+  } else { autoLayout = null; activeCodeCount = effectiveCodeCount(); }
+  if (previous !== activeCodeCount) {
+    resetEncoder();
+    if (displayModules.length !== activeCodeCount) { displayModules = []; show('qr-wrap', false); }
+    if (requeue && transfer) {
+      try { fillQueue(); }
+      catch (error) { pauseSend(); message('send-message', `Code preparation failed: ${error.message}`, true); }
+    }
+  }
+  if (transfer) updateCeiling();
+  $('qr-size-plus').title = `Larger QR codes · ${activeCodeCount} codes now`;
+  $('qr-size-minus').title = `Smaller QR codes · ${activeCodeCount} codes now`;
+  renderModules();
+}
+function adjustQRSize(delta) {
+  $('code-count').value = 'auto';
+  qrTargetSize = Math.max(referenceModules + 8, (autoLayout?.cell ?? qrTargetSize) + delta);
+  refreshSendLayout();
+}
+$('qr-size-plus').onclick = () => adjustQRSize(8);
+$('qr-size-minus').onclick = () => adjustQRSize(-8);
+function duration(seconds) {
+  if (!Number.isFinite(seconds)) return 'Estimating…';
+  const total = Math.max(1, Math.ceil(seconds)), hours = Math.floor(total / 3600), minutes = Math.floor(total % 3600 / 60), rest = total % 60;
+  return [hours ? `${hours} h` : '', minutes ? `${minutes} min` : '', rest ? `${rest} s` : ''].filter(Boolean).join(' ');
+}
 function updateCeiling() {
   if (!transfer) return;
-  const useful = transfer.meta.packedSize / schedule.length * Number($('speed').value) * Number($('code-count').value);
+  const useful = transfer.meta.packedSize / schedule.length * Number($('speed').value) * effectiveCodeCount();
   write('send-rate', `${format(Math.round(useful))}/s`);
+  write('send-eta', `Estimated minimum: ${duration(schedule.length / (Number($('speed').value) * effectiveCodeCount()))} · actual reception may take longer.`);
   $('send-rate').title = 'Ideal compressed payload per second, after manifest and parity overhead. Actual reception is slower when frames are missed.';
 }
 function drawCode(text) {
@@ -146,29 +198,39 @@ function drawCode(text) {
 }
 function renderModules() {
   if (!displayModules.length) return;
-  // Use whole CSS pixels per module; never smooth a code between sizes.
-  const stage = $('send-stage');
-  const count = displayModules.length, width = stage.clientWidth - 36, height = stage.clientHeight - 110;
-  const sideways = Math.min((width - 16 * (count - 1)) / count, height);
-  const stacked = Math.min(width, (height - 16 * (count - 1)) / count);
-  const vertical = count > 1 && stacked > sideways;
-  $('qr-wrap').classList.toggle('stacked', vertical);
-  show('qr-canvas-2', count > 1);
-  const available = Math.max(100, count === 1 ? Math.min(width, height) : Math.max(sideways, stacked));
+  const count = displayModules.length, auto = isAutoLayout() && autoLayout?.count === count;
+  const columns = auto ? autoLayout.columns : count >= 15 ? count / 3 : count <= 2 ? count : count / 2;
+  const rows = auto ? autoLayout.rows : count >= 15 ? 3 : count <= 2 ? 1 : 2;
+  const { width, height } = stageSpace(), gap = 4;
+  $('qr-wrap').style.gap = `${gap}px`;
+  $('qr-wrap').style.gridTemplateColumns = `repeat(${columns}, max-content)`;
+  $('qr-wrap').style.gridTemplateRows = `repeat(${rows}, max-content)`;
+  while (qrCanvases.length < count) {
+    const canvas = document.createElement('canvas'); canvas.id = `qr-canvas-${qrCanvases.length + 1}`;
+    canvas.setAttribute('aria-label', `Animated QR code ${qrCanvases.length + 1}`);
+    $('qr-wrap').appendChild(canvas); qrCanvases.push(canvas);
+  }
+  for (const [i, canvas] of qrCanvases.entries()) canvas.hidden = i >= count;
+  const available = Math.max(1, Math.min((width - gap * (columns - 1)) / columns, (height - gap * (rows - 1)) / rows));
+  const largest = Math.max(...displayModules.map(code => code.size + 8));
+  // Keep an integer-module backing raster, then display it at the requested
+  // CSS size with pixelated sampling. This avoids both slot padding and size jumps.
+  const size = auto ? largest * Math.max(1, Math.ceil(autoLayout.cell / largest)) : largest * Math.max(1, Math.floor(available / largest));
+  const displaySize = auto ? autoLayout.cell : size;
   for (const [index, code] of displayModules.entries()) {
-    const modules = code.size, scale = Math.max(1, Math.floor(available / (modules + 8)));
-    const size = (modules + 8) * scale;
-    const canvas = index ? $('qr-canvas-2') : $('qr-canvas'); canvas.width = size; canvas.height = size;
-    canvas.style.width = `${size}px`; canvas.style.height = `${size}px`;
+    const modules = code.size, scale = Math.max(1, Math.floor(size / (modules + 8)));
+    const offset = Math.floor((size - modules * scale) / 2);
+    const canvas = qrCanvases[index]; canvas.width = size; canvas.height = size;
+    canvas.style.width = `${displaySize}px`; canvas.style.height = `${displaySize}px`;
     const context = canvas.getContext('2d');
     context.fillStyle = '#fff'; context.fillRect(0, 0, size, size); context.fillStyle = '#000';
     for (let y = 0; y < modules; y++) for (let x = 0; x < modules; x++) {
-      if (code.data[y * modules + x]) context.fillRect((x + 4) * scale, (y + 4) * scale, scale, scale);
+      if (code.data[y * modules + x]) context.fillRect(offset + x * scale, offset + y * scale, scale, scale);
     }
   }
 }
 new ResizeObserver(() => {
-  if (displayModules.length && mode === 'send') renderModules();
+  if (mode === 'send') refreshSendLayout();
 }).observe($('send-stage'));
 function resetEncoder() {
   encodeGeneration++; encodeWorker?.terminate(); encodeWorker = null;
@@ -191,9 +253,9 @@ function fillQueue() {
     };
   }
   // A bounded queue decouples display timing from QR mask search and encoding.
-  while (displayQueue.length + encodePending < 6) {
+  while (displayQueue.length + encodePending < (isAutoLayout() ? 2 : 6)) {
     const texts = [], labels = [];
-    for (let i = 0; i < Number($('code-count').value); i++) {
+    for (let i = 0; i < effectiveCodeCount(); i++) {
       if (cursor >= schedule.length) { pass++; cursor = 0; schedule = makeSchedule(transfer, pass); }
       const item = schedule[cursor++]; texts.push(frameAt(transfer, item));
       labels.push(item[0] === 0 ? 'File info' : item[0] === 1 ? `Block ${item[1] + 1}` : 'Repair');
@@ -220,8 +282,11 @@ function tickSend(now) {
 }
 function startSend() {
   if (!transfer || preparing || running || mode !== 'send' || document.hidden) return;
+  setSignalOnly(isAutoLayout() || effectiveCodeCount() >= 4);
+  refreshSendLayout(false);
   try { fillQueue(); }
   catch (error) {
+    setSignalOnly(false);
     resetEncoder(); message('send-message', `Code preparation failed: ${error.message}`, true); return;
   }
   running = true; $('density').disabled = true;
@@ -230,7 +295,46 @@ function startSend() {
   nextDisplayAt = 0; displayedAt = [];
   sendTimer = requestAnimationFrame(tickSend); syncWakeLock();
 }
+let notchTimer = 0, notchHovered = false, notchFocused = false;
+function scheduleNotchHide() {
+  clearTimeout(notchTimer); notchTimer = 0;
+  if (!document.body.classList.contains('signal-only') || notchHovered || notchFocused) return;
+  notchTimer = setTimeout(() => {
+    notchTimer = 0;
+    if (!notchHovered && !notchFocused) $('signal-notch').classList.add('collapsed');
+  }, 1500);
+}
+function revealNotch() {
+  if (!document.body.classList.contains('signal-only')) return;
+  $('signal-notch').classList.remove('collapsed');
+  scheduleNotchHide();
+}
+$('signal-notch-zone').onpointerenter = event => {
+  if (!document.body.classList.contains('signal-only')) return;
+  notchHovered = event.pointerType !== 'touch'; revealNotch();
+};
+$('signal-notch-zone').onpointerleave = () => { notchHovered = false; scheduleNotchHide(); };
+$('signal-notch-zone').onpointerdown = () => revealNotch();
+$('signal-notch').onfocusin = () => { notchFocused = true; revealNotch(); };
+$('signal-notch').onfocusout = () => { notchFocused = false; scheduleNotchHide(); };
+function setSignalOnly(enabled) {
+  document.body.classList.toggle('signal-only', enabled);
+  show('signal-notch-zone', enabled);
+  show('signal-notch', enabled);
+  clearTimeout(notchTimer); notchTimer = 0;
+  notchHovered = false; notchFocused = false;
+  $('signal-notch').classList.remove('collapsed');
+  if (enabled) scheduleNotchHide();
+  show('exit-signal', enabled);
+  show('qr-size-controls', enabled);
+  if (displayModules.length) renderModules();
+}
+$('exit-signal').onclick = () => { pauseSend(); setSignalOnly(false); };
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && document.body.classList.contains('signal-only')) { pauseSend(); setSignalOnly(false); }
+});
 function pauseSend() {
+  setSignalOnly(false);
   running = false; cancelAnimationFrame(sendTimer); $('density').disabled = preparing;
   $('send-status').classList.remove('live');
   if (transfer) {
@@ -248,18 +352,11 @@ $('send-start').onclick = async () => {
   startSend();
   if (running && window.matchMedia('(max-width: 760px)').matches) $('send-stage').scrollIntoView({ block: 'nearest' });
 };
-$('fullscreen').onclick = async () => {
-  try {
-    if (document.fullscreenElement) await document.exitFullscreen();
-    else if ($('send-stage').requestFullscreen) await $('send-stage').requestFullscreen();
-    else message('send-message', 'Fullscreen is unavailable in this browser. Rotate your device for a larger code.');
-  } catch { message('send-message', 'Fullscreen is unavailable here. You can still scan the code.'); }
+$('fullscreen').onclick = () => {
+  if (!transfer) return;
+  if (!running) startSend();
+  if (running) { setSignalOnly(true); refreshSendLayout(); }
 };
-document.addEventListener('fullscreenchange', () => {
-  const label = document.fullscreenElement ? 'Exit fullscreen' : 'Expand code to fullscreen';
-  $('fullscreen').setAttribute('aria-label', label); $('fullscreen').title = label;
-  renderModules();
-});
 
 async function setupDecoder(generation) {
   let nativeDetector = null;
@@ -284,89 +381,148 @@ function createDecodeWorker(generation = cameraGeneration) {
     if (data.error) {
       stopCamera(); message('receive-message', 'The QR decoder could not start. Use a current browser with WebAssembly enabled.', true); return;
     }
-    if (scanning) for (const text of data.texts) acceptFrame(text);
+    if (scanning) {
+      updateDetections(data.codes || [], data.width, data.height);
+      for (const text of data.texts) acceptFrame(text);
+    }
   };
   worker.onerror = () => {
     if (!isCurrent()) return;
     stopCamera(); message('receive-message', 'The camera decoder could not load. Reload Beam while online, then try again.', true);
   };
 }
-async function startCamera() {
-  if (cameraPending || scanning || receiver.verified || finishPending || mode !== 'receive' || document.hidden) return;
-  if (!navigator.mediaDevices?.getUserMedia || !isSecureContext) {
-    message('receive-message', 'This browser cannot access the camera here. Open Beam over HTTPS, or run python -m http.server and open http://localhost:8000 on this device.', true); return;
+async function startCamera(source = 'camera') {
+  if (cameraPending || scanning || receiver.verified || finishPending || mode !== 'receive' || (document.hidden && source === 'camera')) return;
+  const screen = source === 'screen', label = screen ? 'screen capture' : 'camera';
+  if (!isSecureContext || !navigator.mediaDevices?.[screen ? 'getDisplayMedia' : 'getUserMedia']) {
+    message('receive-message', `This browser cannot access ${label} here. Use a supported desktop browser over HTTPS or localhost.`, true); return;
   }
+  captureSource = source;
   const generation = ++cameraGeneration;
   cameraPending = generation;
-  write('camera-start', 'Cancel camera request');
-  message('receive-message', 'Waiting for camera access…');
+  write(screen ? 'screen-start' : 'camera-start', `Cancel ${label} request`);
+  message('receive-message', screen ? 'Choose the sender’s tab, window, or screen in the sharing picker…' : 'Waiting for camera access…');
   let candidate = null;
   try {
+    // Invoke directly from the click handler, before awaiting decoder setup.
     const device = $('camera-select').value;
-    candidate = await navigator.mediaDevices.getUserMedia({ audio: false, video: {
-      ...(device ? { deviceId: { exact: device } } : { facingMode: { ideal: 'environment' } }),
-      width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 },
-    } });
-    if (generation !== cameraGeneration || mode !== 'receive' || document.hidden) { candidate.getTracks().forEach(t => t.stop()); return; }
+    candidate = screen
+      ? await navigator.mediaDevices.getDisplayMedia({ audio: false, video: { frameRate: { ideal: 60 } } })
+      : await navigator.mediaDevices.getUserMedia({ audio: false, video: {
+        ...(device ? { deviceId: { exact: device } } : { facingMode: { ideal: 'environment' } }),
+        width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 },
+      } });
+    if (generation !== cameraGeneration || mode !== 'receive' || (!screen && document.hidden)) { candidate.getTracks().forEach(t => t.stop()); return; }
     stream = candidate;
+    const track = stream.getVideoTracks()[0];
+    track.onended = () => {
+      if (generation === cameraGeneration) { stopCamera(); message('receive-message', `${screen ? 'Screen sharing ended' : 'The camera disconnected'}. Your progress is kept; start the input again to resume.`); }
+    };
     $('video').srcObject = stream;
-    show('video'); show('camera-empty', false);
+    show('video'); show('qr-overlay'); show('camera-empty', false);
     await $('video').play();
     if (generation !== cameraGeneration) return;
     await setupDecoder(generation);
     if (generation !== cameraGeneration) return;
-    const devices = (await navigator.mediaDevices.enumerateDevices().catch(() => [])).filter(d => d.kind === 'videoinput');
-    if (generation !== cameraGeneration) return;
-    const selectedId = stream.getVideoTracks()[0].getSettings().deviceId;
-    $('camera-select').replaceChildren(...devices.map((device, i) => {
-      const option = document.createElement('option'); option.value = device.deviceId; option.textContent = device.label || `Camera ${i + 1}`;
-      option.selected = device.deviceId === selectedId; return option;
-    }));
-    show('camera-select', devices.length > 1); show('camera-label', devices.length > 1);
-    stream.getVideoTracks()[0].onended = () => {
-      if (generation === cameraGeneration) { stopCamera(); message('receive-message', 'The camera disconnected. Your progress is kept; reconnect it and resume.', true); }
-    };
-    if (stream.getVideoTracks()[0].readyState === 'ended') throw new Error('The camera disconnected. Reconnect it and try again.');
+    if (!screen) {
+      const devices = (await navigator.mediaDevices.enumerateDevices().catch(() => [])).filter(d => d.kind === 'videoinput');
+      if (generation !== cameraGeneration) return;
+      const selectedId = track.getSettings().deviceId;
+      $('camera-select').replaceChildren(...devices.map((device, i) => {
+        const option = document.createElement('option'); option.value = device.deviceId; option.textContent = device.label || `Camera ${i + 1}`;
+        option.selected = device.deviceId === selectedId; return option;
+      }));
+      show('camera-select', devices.length > 1); show('camera-label', devices.length > 1);
+    } else { show('camera-select', false); show('camera-label', false); }
+    if (track.readyState === 'ended') throw new Error(`${label} ended. Start it again to resume.`);
     scanning = true; decodeBusy = false; lastVideoTime = -1; lastScanAt = 0;
-    write('camera-start', 'Pause camera Ⅱ'); write('camera-status', 'LOOKING FOR SIGNAL'); $('camera-status').className = 'status-label live';
-    message('receive-message', receiver.meta ? 'Camera resumed. Previously received blocks are kept.' : 'Point the camera at the entire code on the sender’s screen.');
-    animation = requestAnimationFrame(scan); syncWakeLock();
+    write(screen ? 'screen-start' : 'camera-start', `Pause ${label} Ⅱ`);
+    write('camera-status', 'LOOKING FOR SIGNAL'); $('camera-status').className = 'status-label live';
+    message('receive-message', receiver.meta ? `${label} resumed. Previously received blocks are kept.` : screen ? 'Reading QR codes from the shared screen. Keep the sender’s codes visible in the captured surface.' : 'Point the camera at all codes on the sender’s screen.');
+    scheduleScan(); syncWakeLock();
   } catch (error) {
     candidate?.getTracks().forEach(t => t.stop());
     if (generation !== cameraGeneration) return;
     stopCamera();
-    const descriptions = {
+    const descriptions = screen ? {
+      NotAllowedError: 'Screen sharing was cancelled or denied. Click Capture screen to choose again.',
+      InvalidStateError: 'Click Capture screen while this page is focused to open the sharing picker.',
+      NotReadableError: 'The selected screen could not be captured. Choose another window or screen.',
+    } : {
       NotAllowedError: 'Camera permission was denied. Allow camera access in your browser settings, then try again.',
       NotFoundError: 'No camera was found. Connect a camera or open Beam on a phone.',
       NotReadableError: 'The camera is busy. Close other apps that use it, then try again.',
       OverconstrainedError: 'That camera is unavailable. Select another camera and try again.',
     };
-    message('receive-message', descriptions[error.name] || `Could not start the camera: ${error.message}`, true);
+    message('receive-message', descriptions[error.name] || `Could not start ${label}: ${error.message}`, true);
   } finally {
-    // An older request must not clear a newer request's pending state.
     if (cameraPending === generation) {
-      cameraPending = 0; $('camera-start').disabled = receiver.verified || finishPending;
+      cameraPending = 0; syncCaptureButtons();
     }
   }
 }
+function syncCaptureButtons() {
+  for (const id of ['camera-start', 'screen-start']) $(id).disabled = receiver.verified || finishPending;
+}
 function stopCamera() {
-  scanning = false; cameraPending = 0; cameraGeneration++; cancelAnimationFrame(animation); decodeBusy = false;
+  scanning = false; cameraPending = 0; cameraGeneration++; cancelAnimationFrame(animation); clearTimeout(screenTimer); decodeBusy = false;
   stream?.getTracks().forEach(t => t.stop()); stream = null;
   decodeWorker?.terminate(); decodeWorker = null; detector = null;
-  $('video').srcObject = null; show('video', false); show('camera-empty');
+  $('video').srcObject = null; show('video', false); show('qr-overlay', false); show('camera-empty');
+  updateDetections([], 1, 1);
   write('camera-start', receiver.meta ? 'Resume camera ↗' : 'Start camera ↗');
-  $('camera-start').disabled = receiver.verified || finishPending;
-  write('camera-status', receiver.meta ? 'CAMERA PAUSED' : 'CAMERA OFF'); $('camera-status').className = 'status-label';
+  write('screen-start', receiver.meta ? 'Resume screen capture ↗' : 'Capture screen ↗');
+  syncCaptureButtons();
+  const name = captureSource === 'screen' ? 'SCREEN' : 'CAMERA';
+  write('camera-status', receiver.meta ? `${name} PAUSED` : `${name} OFF`); $('camera-status').className = 'status-label';
   write('decoder-label', ''); syncWakeLock();
 }
-$('camera-start').onclick = () => {
-  if (scanning || cameraPending) { stopCamera(); message('receive-message', 'Camera paused. Your progress is kept.'); }
-  else startCamera();
-};
+function toggleCapture(source) {
+  if (scanning || cameraPending) {
+    const same = captureSource === source;
+    stopCamera();
+    if (same) { message('receive-message', 'Input paused. Your progress is kept.'); return; }
+  }
+  return startCamera(source);
+}
+$('camera-start').onclick = () => toggleCapture('camera');
+$('screen-start').onclick = () => toggleCapture('screen');
 $('camera-select').onchange = async () => { stopCamera(); await startCamera(); };
+let latestDetections = [], detectionWidth = 1, detectionHeight = 1;
+function updateDetections(codes, width, height) {
+  latestDetections = codes; detectionWidth = width || 1; detectionHeight = height || 1;
+  drawDetections();
+}
+function drawDetections() {
+  const overlay = $('qr-overlay'), video = $('video');
+  const width = video.clientWidth, height = video.clientHeight;
+  overlay.width = width; overlay.height = height;
+  const context = overlay.getContext('2d'); context.clearRect(0, 0, width, height);
+  const scale = Math.min(width / detectionWidth, height / detectionHeight);
+  const left = (width - detectionWidth * scale) / 2, top = (height - detectionHeight * scale) / 2;
+  let beam = 0;
+  for (const [index, code] of latestDetections.entries()) {
+    const isBeam = /^B[12]:/.test(code.text); if (isBeam) beam++;
+    const points = code.points || [];
+    if (!points.length) continue;
+    const xs = points.map(p => p.x), ys = points.map(p => p.y);
+    const x = left + Math.min(...xs) * scale, y = top + Math.min(...ys) * scale;
+    const w = (Math.max(...xs) - Math.min(...xs)) * scale, h = (Math.max(...ys) - Math.min(...ys)) * scale;
+    context.strokeStyle = context.fillStyle = isBeam ? '#6fffa2' : '#ffd166';
+    context.lineWidth = 3; context.strokeRect(x, y, w, h);
+    context.font = 'bold 14px system-ui'; context.fillText(`#${index + 1}`, x + 4, Math.max(16, y - 5));
+  }
+  write('qr-count-label', `${latestDetections.length} QR · ${beam} Beam`);
+}
+new ResizeObserver(drawDetections).observe($('video'));
+function scheduleScan() {
+  // Keep captured windows/tabs readable when selecting the sender hides Beam.
+  if (captureSource === 'screen' && document.hidden) screenTimer = setTimeout(() => scan(performance.now()), 50);
+  else animation = requestAnimationFrame(scan);
+}
 function scan(now) {
   if (!scanning) return;
-  animation = requestAnimationFrame(scan);
+  scheduleScan();
   const video = $('video');
   if (decodeBusy || video.readyState < 2 || video.currentTime === lastVideoTime || now - lastScanAt < 8) return;
   lastVideoTime = video.currentTime; lastScanAt = now;
@@ -381,6 +537,10 @@ function scan(now) {
       return nativeDetector.detect(video);
     }).then(codes => {
       if (generation !== cameraGeneration || !scanning) return;
+      updateDetections(codes.map(code => ({ text: code.rawValue, points: code.cornerPoints?.length ? code.cornerPoints : code.boundingBox ? [
+        { x: code.boundingBox.x, y: code.boundingBox.y },
+        { x: code.boundingBox.x + code.boundingBox.width, y: code.boundingBox.y + code.boundingBox.height },
+      ] : [] })), video.videoWidth, video.videoHeight);
       for (const code of codes) acceptFrame(code.rawValue);
     }).catch(() => {
       if (generation !== cameraGeneration) return;
@@ -394,7 +554,7 @@ function scan(now) {
   } else if (decodeWorker) {
     try {
       // Preserve detail for dense codes, but bound work per camera frame.
-      const scale = Math.min(1, 1920 / Math.max(video.videoWidth, video.videoHeight));
+      const scale = Math.min(1, (captureSource === 'screen' ? 3840 : 1920) / Math.max(video.videoWidth, video.videoHeight));
       const width = Math.round(video.videoWidth * scale), height = Math.round(video.videoHeight * scale);
       if (scanCanvas.width !== width || scanCanvas.height !== height) { scanCanvas.width = width; scanCanvas.height = height; }
       scanContext.drawImage(video, 0, 0, width, height);
@@ -428,6 +588,8 @@ function updateReceiver() {
   write('receive-bytes', r.meta ? format(bytes) : '—'); write('recovered', `${r.recovered} blocks`);
   const elapsed = (Date.now() - r.startedAt) / 1000;
   write('receive-rate', r.meta && elapsed > 0 ? `${format(Math.round(bytes / Math.max(1, elapsed)))}/s` : '—');
+  const remaining = r.meta ? Math.max(0, r.meta.packedSize - bytes) : 0;
+  write('receive-eta', r.verified ? 'Complete' : !r.meta ? 'Waiting for a file.' : r.complete ? 'Verifying file…' : bytes > 0 && elapsed > 0 ? `Estimated remaining: ${duration(remaining * elapsed / bytes)}` : 'Estimating remaining time…');
   $('clear-receive').disabled = !r.meta && r.pending.length === 0;
 }
 async function completeReceive() {
@@ -446,6 +608,7 @@ async function completeReceive() {
       $('received-text').value = new TextDecoder().decode(bytes);
       show('received-text-wrap'); write('copy-text', 'Copy text');
     }
+    write('receive-eta', 'Complete');
     write('camera-status', 'FILE VERIFIED'); $('camera-status').className = 'status-label success';
     $('camera-empty').querySelector('h3').textContent = 'Every piece, in place.';
     $('camera-empty').querySelector('p').textContent = 'Your file passed verification and is ready to save.';
@@ -466,7 +629,7 @@ function resetReceiver() {
   if (downloadUrl) URL.revokeObjectURL(downloadUrl); downloadUrl = null;
   $('download').removeAttribute('href'); show('download', false); show('verified', false);
   show('received-text-wrap', false); $('received-text').value = '';
-  $('camera-start').disabled = false; write('camera-start', 'Start camera ↗');
+  syncCaptureButtons(); write('camera-start', 'Start camera ↗');
   write('camera-status', 'CAMERA OFF'); write('receive-activity', 'READY TO SCAN');
   message('receive-message', 'Ready for a new file. Start the camera when the sender is ready.');
   write('receive-note', 'A download becomes available only after the complete file passes verification.'); $('receive-note').removeAttribute('title');
@@ -498,8 +661,12 @@ setInterval(() => {
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     if (running) { pauseSend(); message('send-message', 'Signal paused because this tab was hidden. Resume when the receiver is ready.'); }
-    if (scanning || cameraPending) { stopCamera(); message('receive-message', 'Camera paused while this tab was hidden. Resume to continue.'); }
-  } else syncWakeLock();
+    if ((scanning || cameraPending) && captureSource === 'camera') { stopCamera(); message('receive-message', 'Camera paused while this tab was hidden. Resume to continue.'); }
+    else if (scanning) { cancelAnimationFrame(animation); clearTimeout(screenTimer); scheduleScan(); }
+  } else {
+    if (scanning && captureSource === 'screen') { clearTimeout(screenTimer); cancelAnimationFrame(animation); scheduleScan(); }
+    syncWakeLock();
+  }
 });
 window.addEventListener('pagehide', event => {
   if (running) pauseSend();

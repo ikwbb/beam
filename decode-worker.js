@@ -1,9 +1,9 @@
-import { decodeImage } from './decoder.js';
-// Only one frame is in flight. The bundled WASM finds both codes in one pass.
+import { decodeDetections } from './decoder.js';
+// One frame in flight; WASM locates all QR codes in a single pass.
 self.onmessage = async ({ data }) => {
   try {
-    const texts = await decodeImage({ data: new Uint8ClampedArray(data.buffer), width: data.width, height: data.height });
-    self.postMessage({ texts, generation: data.generation });
+    const codes = await decodeDetections({ data: new Uint8ClampedArray(data.buffer), width: data.width, height: data.height });
+    self.postMessage({ codes, texts: codes.map(code => code.text).filter(text => /^B[12]:/.test(text)), width: data.width, height: data.height, generation: data.generation });
   } catch (error) {
     self.postMessage({ texts: [], error: error.message, generation: data.generation });
   }

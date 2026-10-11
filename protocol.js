@@ -1,5 +1,6 @@
 /* Beam protocol v2; also reads v1 transfers. No network or DOM access. */
-export const MAX_FILE = 10 * 1024 * 1024;
+// No product size cap; sizes must remain exact JavaScript integers.
+export const MAX_FILE = Number.MAX_SAFE_INTEGER;
 export const BLOCK_SIZES = [384, 720, 1024];
 export const GROUP = 8;
 export const REPAIR_GROUP = 16;
@@ -90,18 +91,19 @@ async function transform(bytes, stream, limit) {
   return out;
 }
 export async function prepareTransfer(file, blockSize = 720, kind = 'file') {
-  if (file.size > MAX_FILE) throw new Error('Choose a file of 10 MiB or less.');
+  if (!Number.isSafeInteger(file.size) || file.size < 0) throw new Error('Invalid file size.');
   if (!BLOCK_SIZES.includes(blockSize)) throw new Error('Invalid code density.');
   const original = new Uint8Array(await file.arrayBuffer());
   const hash = await sha256(original);
   let packed = original, encoding = 'raw';
   if (globalThis.CompressionStream && original.length > 128) {
     // An incompressible file should never become larger on the wire.
-    const compressed = await transform(original, new CompressionStream('gzip'), MAX_FILE + 65536);
+    const compressed = await transform(original, new CompressionStream('gzip'), original.length + Math.ceil(original.length / 1000) + 65536);
     if (compressed.length < original.length) { packed = compressed; encoding = 'gzip'; }
   }
   const id = crypto.getRandomValues(new Uint8Array(8));
   const count = Math.max(1, Math.ceil(packed.length / blockSize));
+  if (count > 0xffffffff) throw new Error('This file exceeds the protocol’s block address range.');
   const name = [...file.name].slice(0, 160).join('') || 'received-file';
   const meta = { name, size: original.length, packedSize: packed.length, encoding, sha256: hash, kind: kind === 'text' ? 'text' : 'file' };
   const manifest = packet(0, id, 0, count, blockSize, enc.encode(JSON.stringify(meta)));
@@ -130,6 +132,15 @@ export function makeSchedule(transfer, pass = 0, random = Math.random) {
   }
   else for (let start = 0; start < transfer.count; start += REPAIR_GROUP) {
     const size = Math.min(REPAIR_GROUP, transfer.count - start), group = start / REPAIR_GROUP;
+    // B2 stores repair-group IDs in 16 bits. Beyond that range, repeat
+    // original data with legacy parity rather than wrap a repair address.
+    if (group > 65535) {
+      for (let i = start; i < start + size; i++) {
+        frames.push([1, i]);
+        if ((i + 1) % GROUP === 0 || i === transfer.count - 1) frames.push([2, Math.floor(i / GROUP)]);
+      }
+      continue;
+    }
     // Keep single-block notes compact. A larger file's singleton tail gets a
     // different repair QR, so even its final original QR can be missed forever.
     if (size === 1) { frames.push(transfer.count === 1 ? [1, start] : [3, group * 65536 + 1]); continue; }

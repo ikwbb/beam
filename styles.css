@@ -5,3 +5,30 @@ footer a{color:var(--muted);text-underline-offset:4px}footer a:hover{color:var(-
 .scan-options{border:1px solid var(--line);border-radius:7px;padding:0 12px}.scan-options summary{cursor:pointer;padding:10px 0;font-size:14px;color:var(--blue)}.scan-options[open] summary{margin-bottom:8px}.scan-options .hint{margin-bottom:12px}textarea:focus-visible{outline:2px solid var(--blue);outline-offset:3px}
 @media(max-width:380px){.metrics>div{padding:0 8px}.metrics span{font-size:10px;letter-spacing:0}.metrics strong{font-size:14px}.mode{font-size:13px;gap:6px}}
 .input-switch{display:flex;gap:4px;padding:3px;background:#080d14;border:1px solid var(--line);border-radius:7px;margin-bottom:16px}.input-switch button{flex:1;font-size:14px;padding:8px 6px;border:0;background:none;color:var(--muted);border-radius:4px}.input-switch button.active{background:#273244;color:var(--text)}textarea{display:block;width:100%;padding:12px;color:var(--text);background:#111923;border:1px solid #39475b;border-radius:7px;resize:vertical;font:400 16px/1.6 ui-sans-serif,system-ui,sans-serif;min-height:100px}.parallel-label{margin-top:15px}.secondary{margin-top:9px;border:1px solid #435978;border-radius:7px;color:var(--blue);background:#1a2739;padding:10px 15px;font-size:14px;width:100%}#received-text-wrap{margin-top:18px}.qr-wrap{gap:16px}.qr-wrap.stacked{flex-direction:column}.qr-wrap canvas{display:block;width:auto;height:auto;max-width:100%;max-height:100%;image-rendering:pixelated;flex-shrink:0}.stage:fullscreen .qr-wrap canvas{max-height:calc(100dvh - 100px)}.controls .primary{scroll-margin-top:20px}@media(max-width:640px){.qr-wrap{gap:10px}}
+
+/* Fixed multi-code grid and capture detection overlay. */
+.qr-wrap{display:grid;align-content:center;justify-content:center;gap:4px}
+.qr-overlay{position:absolute;inset:0;width:100%;height:100%;z-index:1;pointer-events:none}
+.signal-exit{position:absolute;right:12px;top:8px;z-index:5;background:#172334d9;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 10px;font-size:12px}
+body.signal-only{overflow:hidden}
+body.signal-only .header,body.signal-only .title-row,body.signal-only .mode-switch,body.signal-only .controls,body.signal-only .metrics,body.signal-only .stage-note,body.signal-only .help,body.signal-only footer{display:none}
+body.signal-only main{padding:0;max-width:none}
+body.signal-only #send-panel{display:block}
+body.signal-only #send-stage{position:fixed;inset:0;z-index:10;width:100vw;height:100dvh;min-height:0;aspect-ratio:auto;border:0;border-radius:0}
+body.signal-only #send-stage .stage-toolbar,body.signal-only #send-stage .stage-bottom{display:none}
+body.signal-only #send-stage .qr-wrap{padding:0}
+body.signal-only #send-stage canvas{max-width:none;max-height:none}
+
+/* Compact, bottom-centred signal notch; no viewport bottom padding. */
+.signal-notch-zone{position:absolute;left:0;right:0;bottom:0;height:6px;z-index:6}
+.signal-notch{position:absolute;left:50%;bottom:0;transform:translateX(-50%);z-index:6;display:flex;align-items:center;gap:6px;height:30px;padding:2px 8px;background:#172334f5;color:var(--text);border:1px solid var(--line);border-bottom:0;border-radius:15px 15px 0 0;box-shadow:0 -2px 8px #0003;white-space:nowrap;transition:transform .18s ease,opacity .18s ease}
+.signal-notch.collapsed{transform:translate(-50%,calc(100% + 6px));opacity:0;pointer-events:none}
+@media(prefers-reduced-motion:reduce){.signal-notch{transition:none}}
+.signal-notch .signal-exit{position:static;min-height:0;height:26px;padding:0 7px;background:transparent;border:0;border-radius:7px;font-size:12px;display:flex;align-items:center;gap:7px}
+.signal-notch kbd{font:10px ui-sans-serif,system-ui,sans-serif;color:var(--muted);border:1px solid #47566c;border-radius:3px;padding:0 3px;line-height:15px}
+.qr-size-controls{position:static;display:flex;align-items:center;gap:2px;border-left:1px solid #47566c;padding-left:6px}
+.qr-size-controls button{width:28px;height:26px;padding:0;background:transparent;color:var(--text);border:0;border-radius:7px;font-size:20px;line-height:1}
+.signal-notch button:hover{background:#ffffff12}
+.stage:fullscreen .stage-toolbar,.stage:fullscreen .stage-bottom,.stage:fullscreen #exit-signal{display:none}
+.stage:fullscreen .qr-wrap{padding:0}
+.stage:fullscreen .qr-wrap canvas{max-width:none;max-height:none}

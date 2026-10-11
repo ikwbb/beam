@@ -1,17 +1,29 @@
 # Beam
 
-A small, browser-only application that moves files and pasted text from a display to a camera through animated QR codes. No uploads, accounts, pairing, runtime CDN, or build dependencies.
+A small, browser-only application that moves files and pasted text from a display to a camera or browser screen capture through animated QR codes. No uploads, accounts, pairing, runtime CDN, or build dependencies.
 
 ## Use
 
-1. Open the app on both devices. On the sender, select a document or any file of up to 10 MiB, or choose **Paste text** and enter text in any language.
-2. On the receiver, choose **Receive a file**, grant camera access, and point it at the sender's code.
+1. Open the app on both devices. On the sender, select a document or file (no fixed product size cap), or choose **Paste text** and enter text in any language.
+2. On the receiver, choose **Receive a file**, click **Start camera** and point it at the sender, or click **Capture screen** and choose the sender’s tab, window, or entire screen in the browser’s native picker.
 3. Start the signal. Keep the whole code in view. Use fullscreen or move closer if necessary.
 4. Wait for **File verified**, then press **Save verified file**. For pasted text, you can also read and copy the verified text. Pause the sender manually afterward.
 
 The sender repeats indefinitely. The receiver retains valid blocks across camera pauses and mode changes. A refresh or closed tab loses this in-memory progress. The sender has no feedback channel, so it cannot automatically know when the receiver has finished.
 
-Start with the defaults: one code, balanced density, 10 fps. For more speed, open **Scan options**, select **Two · higher capacity**, and use fullscreen with both codes in view. If progress stalls, choose one code or a lower rate. Higher density needs a larger, sharper code. Changing density or editing text prepares a new transfer; clear the old transfer on the receiver first. Changing speed, code count, or pausing preserves the transfer identity.
+Start with the defaults: Auto layout, high density, 20 fps. Auto fills the available webpage at the selected QR size, with no eighteen-code cap. Every gap between QR canvases is exactly 4 CSS pixels, in both auto and manual layouts. Display sizes adjust in 8px steps instead of snapping to a whole QR-width multiple. Each canvas uses an integer-module backing raster and pixelated display scaling, retaining its four-module quiet zone without redundant slot padding. All canvases have equal square dimensions, even when QR versions differ. Manual counts are **1, 2, 4, 6, 8, 15, or 18**; 2 uses one row, 4/6/8 use two rows, and 15/18 use three rows. Auto and manual layouts with four or more codes hide other page elements and use the webpage without outer padding. The expand button also fills the webpage. No browser fullscreen API is used: press **F11** yourself if desired. Pause/exit, Esc, and **− / +** share a 30px-high notch centred at the bottom edge with zero bottom margin. The notch slides away after 1.5 seconds idle; hovering or tapping the bottom edge reveals it. Hovering the controls or focusing them with the keyboard keeps it open. Esc remains available while the notch is hidden. **− / +** adjusts QR size by 8px per click; **Pause & exit** or **Esc** restores the controls. Resizing, including F11 and browser zoom, preserves the running transfer and updates the count and time estimate. Changing density or editing text prepares a new transfer; clear the old transfer on the receiver first. Changing speed, code count, or pausing preserves the transfer identity.
+
+## Capture preview and QR positions
+
+Both input modes draw numbered green boxes around decoded Beam QR codes and amber boxes around other decoded QR codes. The per-frame counter shows all decoded QR codes and the subset carrying Beam frames. Boxes clear on the next decoded frame; an undecodable QR has no box, so the counter describes successfully decoded codes, not every visible QR-like shape.
+
+Screen capture requests video only. Use desktop Chrome or Edge over HTTPS or localhost; the sharing picker and surface choices belong to the browser. If you select another tab, receiving continues in the background (browser throttling can reduce speed). Stopping sharing, pausing, or switching inputs releases the previous stream and retains received blocks. Camera mode still pauses when its page is hidden. Screen frames retain up to 3840 pixels on their longest side; camera frames retain up to 1920. For very small codes, capture the sender’s tab or window rather than an entire high-resolution desktop.
+
+## File size and transfer time
+
+There is no fixed 10 MiB or 128 MiB file cap. Preparing, hashing, compressing, and verifying files currently uses memory, so actual capacity depends on the browser and device. The packet format uses a 32-bit block count; repair groups beyond B2’s 16-bit group address use repeated original data with parity instead of wrapped addresses.
+
+After preparation, the sender shows a minimum estimate for one pass, based on the compressed payload, manifest/parity frames, selected FPS, and code count. This updates when speed or code count changes; it assumes every displayed code is decoded. The receiver shows estimated remaining time using reconstructed packed bytes and elapsed time, including pauses. Missed frames and decode speed can make actual transfer longer.
 
 ## Run or host
 
@@ -37,7 +49,7 @@ npm start
 
 Then open `http://localhost:8080` on that computer. For a second device, open its own copy of `standalone.html`, use GitHub Pages/HTTPS, or run a local server on that device. `http://192.168.x.x` does not normally qualify for camera permission. See [MDN's camera security requirements](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia#security).
 
-Load the app once on each device and wait for **Ready to reopen offline**. Its service worker caches the app and its runtime libraries. The transfer then works without a network connection. Browser cache eviction, private browsing, or service-worker restrictions may prevent later offline reopening. No file contents or camera frames are sent over a network.
+Load the app once on each device and wait for **Ready to reopen offline**. Its service worker caches the app and its runtime libraries. The transfer then works without a network connection. Browser cache eviction, private browsing, or service-worker restrictions may prevent later offline reopening. No file contents, camera frames, or captured screen frames are sent over a network.
 
 An app update waits until all Beam tabs at that address close, so a transfer keeps using one release. Reopen after closing those tabs to apply it. Each hosted path has its own cache. When releasing changes to any cached asset, bump the cache version in `sw.js`.
 
@@ -47,7 +59,7 @@ For source changes, regenerate the portable file with `npm run build:standalone`
 
 | Layer | Implementation |
 | --- | --- |
-| Visual encoding | One or two monochrome QR codes at a time, error correction M, a four-module quiet zone, and integer-pixel modules |
+| Visual encoding | One, two, four, six, eight, fifteen, or eighteen monochrome QR codes at a time, error correction M, a four-module quiet zone, and integer-pixel modules |
 | Payload representation | Base45 in explicit QR alphanumeric mode, which avoids the reference's binary-to-UTF-8-to-Base64 expansion |
 | Compression | Browser gzip, only when the compressed result is smaller; raw bytes otherwise |
 | Identification | Random 64-bit transfer ID on every packet, protocol version, block index, block count, and block size |
@@ -57,7 +69,7 @@ For source changes, regenerate the portable file with `npm run build:standalone`
 | Bounded fountain decoder | Gaussian elimination retains only independent equations; at most 16 per group, discarded as blocks are solved |
 | Late joining | File metadata repeats after varying gaps of 13–17 data/repair frames; up to 64 frames are buffered before metadata arrives |
 | File verification | SHA-256 and the original byte length must match after decompression; only then is a download created |
-| Camera decoding | Native BarcodeDetector when available, otherwise the local zbar-wasm decoder in a Web Worker; both codes are read from one camera frame, and at most one decode is in flight |
+| Camera / screen decoding | Native BarcodeDetector when available, otherwise the local zbar-wasm decoder in a Web Worker; all codes are read from one video frame, and at most one decode is in flight |
 | Display pipeline | A second worker prepares up to six screen frames ahead of time. requestAnimationFrame displays them independently of QR generation; the displayed FPS is measured |
 
 New senders use `B2:` followed by Base45. New receivers also accept old `B1:` transfers. Use the updated app on both devices to send B2; old receivers cannot read it. The decoded packet is big-endian:
@@ -119,7 +131,7 @@ Run the tests with Node 20+:
 npm test
 ```
 
-Tests cover byte-exact binary/text roundtrips, compression, empty files, legacy reception, multiple erasures, permanently missed original frames, repair-only late joining, bounded repair memory, metadata sampling, malformed packets, corruption, decompression limits, SHA-256 failure, and reset during verification. The bundled encoder and decoders roundtrip synthetic QR images at all densities, with rotation, small visual damage, and two simultaneous codes. Runtime tests cover camera cancellation, stale callbacks, wake locks, worker failures, and useful equation progress. Hosting tests cover root/subpath URLs, offline assets, update isolation, and failed installs. Portable-build tests check source freshness and perform a verified QR encode/decode transfer through both embedded workers without network requests.
+Tests cover byte-exact binary/text roundtrips, compression, empty files, legacy reception, multiple erasures, permanently missed original frames, repair-only late joining, bounded repair memory, metadata sampling, malformed packets, corruption, decompression limits, SHA-256 failure, and reset during verification. The bundled encoder and decoders roundtrip synthetic QR images at all densities, with rotation, small visual damage, and up to eighteen simultaneous codes in the requested manual grids and 72 compact automatic QR cells with 4px gaps, with real WASM position coordinates. Runtime tests cover screen picker cancellation, input switching, background capture, letterboxed detection boxes, fixed multi-code layouts, camera cancellation, stale callbacks, wake locks, worker failures, and useful equation progress. Hosting tests cover root/subpath URLs, offline assets, update isolation, and failed installs. Portable-build tests check source freshness and perform a verified QR encode/decode transfer through both embedded workers without network requests.
 
 Synthetic image and mocked lifecycle tests are not physical-camera tests. Before relying on a pair of devices, transfer a small known file, pause and resume the receiver, then try the intended document.
 
@@ -130,7 +142,7 @@ index.html              Sender/receiver interface
 standalone.html         Generated portable app; opens directly, no server
 build-standalone.mjs    Dependency-free portable build from the same sources
 styles.css              Responsive styles
-app.js                  UI, camera lifecycle, display scheduler
+app.js                  UI, camera/screen lifecycle, QR overlays, display scheduler
 protocol.js             Encoding, validation, loss recovery, SHA-256
 encode-worker.js        Bounded QR preparation worker
 decode-worker.js        Camera decoder worker

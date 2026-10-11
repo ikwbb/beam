@@ -126,11 +126,11 @@ test('compressed output cannot exceed the declared original size', async () => {
   for (let i = 0; i < t.count; i++) r.accept(t.dataFrame(i));
   await assert.rejects(r.finish(), /exceeds the declared/); assert.equal(r.verified, false);
 });
-test('pre-manifest queue is bounded and large files are refused', async () => {
+test('pre-manifest queue is bounded and invalid numeric file sizes are refused', async () => {
   const t = await prepareTransfer(file(randomBytes(720 * 100))), r = new Receiver();
   for (let i = 0; i < t.count; i++) r.accept(t.dataFrame(i));
   assert.equal(r.pending.length, 64);
-  await assert.rejects(prepareTransfer({ size: MAX_FILE + 1 }), /10 MiB/);
+  await assert.rejects(prepareTransfer({ size: MAX_FILE + 1 }), /file size/i);
 });
 
 test('independent repair equations recover multiple losses without repeating a data block', async () => {
@@ -365,4 +365,32 @@ test('production WASM decoder finds two simultaneous QR codes at every density',
     }
     assert.deepEqual(await r.finish(), new Uint8Array(bytes));
   }
+});
+
+
+test('files above both the old 10 MiB cap and 128 MiB prepare and verify byte-exactly', async () => {
+  const bytes = new Uint8Array(129 * 1024 * 1024); bytes[0] = 7; bytes[bytes.length - 1] = 29;
+  const transfer = await prepareTransfer(file(bytes, 'large.bin'));
+  assert.equal(transfer.meta.size, bytes.length);
+  const receiver = receiveAll(transfer);
+  const restored = await receiver.finish();
+  assert.deepEqual(restored, bytes);
+  assert.equal(receiver.verified, true);
+});
+
+test('a raw 128 MiB manifest and its high-index data frame are accepted', () => {
+  const size = 128 * 1024 * 1024, blockSize = 384, count = Math.ceil(size / blockSize), id = new Uint8Array(8);
+  const meta = {name: '128MiB.bin', size, packedSize: size, encoding: 'raw', sha256: '0'.repeat(64), kind: 'file'};
+  const receiver = new Receiver();
+  assert.equal(receiver.accept(packet(0, id, 0, count, blockSize, new TextEncoder().encode(JSON.stringify(meta)))), 'manifest');
+  assert.equal(receiver.accept(packet(1, id, count - 1, count, blockSize, new Uint8Array(size % blockSize))), 'accepted');
+});
+
+
+test('large repair schedules never wrap B2 group addresses and still cover the tail', () => {
+  const tail = REPAIR_GROUP * 65536;
+  const schedule = makeSchedule({ count: tail + 1 }, 1, () => 0);
+  assert.ok(schedule.some(([type, index]) => type === 1 && index === tail));
+  assert.ok(schedule.some(([type, index]) => type === 2 && index === Math.floor(tail / 8)));
+  assert.ok(schedule.every(([type, index]) => type !== 3 || index <= 0xffffffff));
 });

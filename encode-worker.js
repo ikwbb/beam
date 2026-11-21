@@ -5,8 +5,8 @@ self.onmessage = ({ data }) => {
       const { modules } = QRCode.create([{ data: text, mode: 'alphanumeric' }], { errorCorrectionLevel: 'M' });
       return { size: modules.size, data: modules.data };
     });
-    self.postMessage({ generation: data.generation, codes, label: data.label, pass: data.pass }, codes.map(code => code.data.buffer));
+    self.postMessage({ generation: data.generation, sequence: data.sequence, codes, label: data.label, pass: data.pass }, codes.map(code => code.data.buffer));
   } catch (error) {
-    self.postMessage({ generation: data.generation, error: error.message });
+    self.postMessage({ generation: data.generation, sequence: data.sequence, error: error.message });
   }
 };

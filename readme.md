@@ -21,6 +21,8 @@ Screen capture requests video only. Use desktop Chrome or Edge over HTTPS or loc
 
 For screen capture, start by sharing the sender's **browser tab** rather than its entire desktop, and use the receiver's scan readout to check the actual captured dimensions. A 4K monitor does not guarantee that the captured video is 4K. In screen mode Beam uses the bundled ZXing worker, detects the QR grid, and scans each cell separately. The receiver displays captured resolution, decode time and processed scans per second. If the count is correct but scans/s is much lower than sender FPS, lower the sender FPS. If many codes are missing from a stationary frame, try sharing a different surface, using larger QR codes, or choosing Balanced density. See [4K capture diagnostics](docs/SCREEN-CAPTURE.md).
 
+At large QR counts the sender uses parallel encoding and draws each frame from a compact pixel atlas. Hover over the bottom controls to see measured displayed FPS. See [sender performance tests](docs/SENDER-PERFORMANCE.md).
+
 ## File size and transfer time
 
 Files above 128 MiB use disk mode automatically: the sender reads and hashes bounded slices, skips whole-file gzip, and the receiver stages blocks on disk. Use the new Beam on both devices. On desktop Chrome or Edge over localhost or HTTPS, scan the first file information QR, select **Choose save location**, then resume scanning. The file is SHA-256 checked before saving. Allow browser storage quota and roughly twice the file size in free disk space when staging and saving share a disk. See [large-file instructions](docs/DISK-TRANSFER.md).

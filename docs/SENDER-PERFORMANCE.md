@@ -1,0 +1,9 @@
+# Sender performance
+
+At 32 High-density QR codes per frame and a requested 30 FPS, the previous sender ran at 7.73 displayed FPS in a Chromium run with a 2592 × 1296 viewport. Its queue was empty during sample checks, and the median time spent in the drawing function was 32.5 ms. This identifies two application bottlenecks: one worker performed all QR generation and mask selection, and the main thread issued a canvas drawing call for every dark module.
+
+The sender now runs up to four QR encoding workers for large grids. It presents batches in sequence even if workers finish out of order. The queue is bounded, and switching layout rewinds only the batches that were not displayed. A compact pixel atlas replaces the per-module drawing calls; each output canvas gets a white fill and a nearest-neighbour copy. QR generation, mask selection, framing, data density, and each canvas's integer backing raster stay the same. Fractional display deadlines avoid systematically rounding the requested FPS down to refresh intervals.
+
+The first same-machine after-test measured 28.58 displayed FPS and 3.3 ms median drawing time. These are Chromium results on the test host, not measurements on the Mac mini. The receiver path is unchanged. Displayed FPS is not received FPS: compare the sender's FPS (hover over the bottom controls) with the receiver's **scans/s** and number of recognized QR codes.
+
+The optional browser performance test needs Playwright and Chromium. Run `npm run test:sender-browser` with `BEAM_BENCH_VERIFY=1` to check native canvas pixels and decode the 32 rendered symbols. Set `BEAM_CHROME_EXECUTABLE` for an existing Chromium executable or `BEAM_BENCH_ROOT` to compare an extracted older release. The six-second measurement starts after warm-up and uses regular High-density B3 packets; sustained repair encoding, capture, and optical transfer are separate workloads.

@@ -20,6 +20,7 @@ function harness({ media, display, formats, detect, wakeLock, workerFailure, rec
   let frameId = 0, frameTime = 0, canvasReads = 0; const boxes = [];
   const context2d = {
     clearRect() {}, strokeRect(...args) { boxes.push(args); }, fillText() {}, fillRect() {}, drawImage() { canvasReads++; },
+    createImageData: (w,h) => ({data: new Uint8ClampedArray(w*h*4)}), putImageData() {},
     getImageData: () => ({ data: new Uint8ClampedArray(16) }),
   };
   const createElement = () => ({
@@ -528,4 +529,27 @@ test('screen capture bypasses native QR detection and exposes the actual capture
   assert.equal(request.source,'screen');assert.equal(request.width,3840);assert.equal(request.height,2160);
   await worker.onmessage({data:{generation:request.generation,width:3840,height:2160,texts:[],codes:[],decoder:'ZXing',decodeMs:51}});
   assert.match(app.element('decoder-label').textContent,/3840×2160 · ZXing · 51 ms/);
+});
+
+test('large batches use multiple QR workers and display completed frames in scheduled order',async()=>{
+  const app=harness();app.evaluate('navigator.hardwareConcurrency=8');
+  app.element('code-count').value='auto';
+  app.element('send-stage').clientWidth=2592;app.element('send-stage').clientHeight=1296;
+  await app.element('file-input').onchange({target:{files:[new File(['parallel'],'test.txt')]}});
+  await app.click('send-start');
+  const workers=app.workers.filter(w=>!w.terminated&&w.messages.length);
+  assert.ok(workers.length>1);
+  const pending=workers.flatMap(w=>w.messages.map(data=>({w,data}))).sort((a,b)=>a.data.sequence-b.data.sequence);
+  const finish=({w,data})=>w.onmessage({data:{...data,codes:Array.from({length:data.texts.length},()=>({size:21,data:new Uint8Array(441)}))}});
+  finish(pending[1]);assert.equal(app.evaluate('displayQueue.length'),0);
+  finish(pending[0]);assert.deepEqual(Array.from(app.evaluate('displayQueue.map(x=>x.sequence)')),[0,1]);
+});
+
+test('25 FPS keeps fractional deadlines on a 60 Hz display clock',()=>{
+  const app=harness();app.element('speed').value='25';
+  app.evaluate(`running=true;transfer={};fillQueue=()=>{};
+    displayQueue=Array.from({length:100},(_,sequence)=>({sequence,codes:[],label:'',pass:1}));
+    for(let i=0;i<120;i++)tickSend(1000+i*1000/60);`);
+  const showed=100-app.evaluate('displayQueue.length');
+  assert.ok(showed>=49&&showed<=51,'two seconds at 25 FPS: '+showed+' frames');
 });

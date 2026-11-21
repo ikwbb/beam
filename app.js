@@ -13,7 +13,10 @@ let mode = 'send';
 let inputMode = 'file';
 let file = null, transfer = null, running = false, preparing = false, preparation = 0;
 let schedule = [], cursor = 0, pass = 0, sendTimer = 0, nextDisplayAt = 0;
-let encodeWorker = null, encodeGeneration = 0, encodePending = 0, displayQueue = [], displayedAt = [];
+let encodeWorkers = [], encodeGeneration = 0, displayQueue = [], displayedAt = [];
+let encodeSequence = 0, readySequence = 0, completedEncodes = new Map(), pendingPositions = new Map();
+let atlasImage, canvasLayout = '';
+const atlas = document.createElement('canvas'), atlasContext = atlas.getContext('2d', {alpha:false});
 let choosingDestination = false;
 let receiver = new Receiver(), stream = null, scanning = false, cameraPending = 0;
 let captureSource = 'camera', screenTimer = 0;
@@ -111,7 +114,7 @@ dropzone.addEventListener('dragleave', () => dropzone.classList.remove('over'));
 dropzone.addEventListener('drop', event => { event.preventDefault(); dropzone.classList.remove('over'); chooseFile(event.dataTransfer.files[0]); });
 $('density').onchange = () => { if (file) chooseFile(file, inputMode); };
 $('code-count').onchange = () => {
-  const resume = running; pauseSend(); resetEncoder(); refreshSendLayout(false);
+  const resume = running; pauseSend(); resetEncoder(true); refreshSendLayout(false);
   if (transfer) {
     try { fillQueue(); updateCeiling(); if (resume) startSend(); }
     catch (error) { resetEncoder(); message('send-message', `Code preparation failed: ${error.message}`, true); }
@@ -166,7 +169,7 @@ function refreshSendLayout(requeue = true) {
     activeCodeCount = autoLayout.count;
   } else { autoLayout = null; activeCodeCount = effectiveCodeCount(); }
   if (previous !== activeCodeCount) {
-    resetEncoder();
+    resetEncoder(true);
     if (displayModules.length !== activeCodeCount) { displayModules = []; show('qr-wrap', false); }
     if (requeue && transfer) {
       try { fillQueue(); }
@@ -208,72 +211,117 @@ function renderModules() {
   const columns = auto ? autoLayout.columns : count >= 15 ? count / 3 : count <= 2 ? count : count / 2;
   const rows = auto ? autoLayout.rows : count >= 15 ? 3 : count <= 2 ? 1 : 2;
   const { width, height } = stageSpace(), gap = 4;
-  $('qr-wrap').style.gap = `${gap}px`;
-  $('qr-wrap').style.gridTemplateColumns = `repeat(${columns}, max-content)`;
-  $('qr-wrap').style.gridTemplateRows = `repeat(${rows}, max-content)`;
   while (qrCanvases.length < count) {
     const canvas = document.createElement('canvas'); canvas.id = `qr-canvas-${qrCanvases.length + 1}`;
     canvas.setAttribute('aria-label', `Animated QR code ${qrCanvases.length + 1}`);
     $('qr-wrap').appendChild(canvas); qrCanvases.push(canvas);
   }
-  for (const [i, canvas] of qrCanvases.entries()) canvas.hidden = i >= count;
   const available = Math.max(1, Math.min((width - gap * (columns - 1)) / columns, (height - gap * (rows - 1)) / rows));
   const largest = Math.max(...displayModules.map(code => code.size + 8));
   // Keep an integer-module backing raster, then display it at the requested
   // CSS size with pixelated sampling. This avoids both slot padding and size jumps.
   const size = auto ? largest * Math.max(1, Math.ceil(autoLayout.cell / largest)) : largest * Math.max(1, Math.floor(available / largest));
   const displaySize = auto ? autoLayout.cell : size;
-  for (const [index, code] of displayModules.entries()) {
-    const modules = code.size, scale = Math.max(1, Math.floor(size / (modules + 8)));
-    const offset = Math.floor((size - modules * scale) / 2);
-    const canvas = qrCanvases[index]; canvas.width = size; canvas.height = size;
-    canvas.style.width = `${displaySize}px`; canvas.style.height = `${displaySize}px`;
-    const context = canvas.getContext('2d');
-    context.fillStyle = '#fff'; context.fillRect(0, 0, size, size); context.fillStyle = '#000';
-    for (let y = 0; y < modules; y++) for (let x = 0; x < modules; x++) {
-      if (code.data[y * modules + x]) context.fillRect(offset + x * scale, offset + y * scale, scale, scale);
+  const layout = `${columns}:${rows}:${count}:${size}:${displaySize}`;
+  if (canvasLayout !== layout) {
+    canvasLayout = layout;
+    $('qr-wrap').style.gap = `${gap}px`;
+    $('qr-wrap').style.gridTemplateColumns = `repeat(${columns}, max-content)`;
+    $('qr-wrap').style.gridTemplateRows = `repeat(${rows}, max-content)`;
+    for (const [i, canvas] of qrCanvases.entries()) {
+      canvas.hidden = i >= count;
+      if (i >= count) continue;
+      if (canvas.width !== size) canvas.width = size;
+      if (canvas.height !== size) canvas.height = size;
+      canvas.style.width = `${displaySize}px`; canvas.style.height = `${displaySize}px`;
     }
+  }
+  // Upload a compact atlas at one pixel per module. Each visible canvas gets
+  // two drawing calls regardless of module count. Nearest-neighbour scaling
+  // preserves the exact integer module raster and quiet zone.
+  const tile = largest - 8, atlasColumns = Math.ceil(Math.sqrt(count));
+  const atlasWidth = atlasColumns * tile, atlasHeight = Math.ceil(count / atlasColumns) * tile;
+  if (!atlasImage || atlas.width !== atlasWidth || atlas.height !== atlasHeight) {
+    atlas.width = atlasWidth; atlas.height = atlasHeight;
+    atlasImage = atlasContext.createImageData(atlasWidth, atlasHeight);
+  }
+  const pixels = new Uint32Array(atlasImage.data.buffer);
+  const black = new Uint32Array(Uint8Array.of(0, 0, 0, 255).buffer)[0];
+  for (const [index, {size:modules,data}] of displayModules.entries()) {
+    const sx = index % atlasColumns * tile, sy = Math.floor(index / atlasColumns) * tile;
+    for (let y = 0; y < modules; y++) {
+      const row = (sy + y) * atlasWidth + sx;
+      for (let x = 0; x < modules; x++) pixels[row + x] = data[y * modules + x] ? black : 0xffffffff;
+    }
+  }
+  atlasContext.putImageData(atlasImage, 0, 0);
+  for (const [index, {size:modules}] of displayModules.entries()) {
+    const sx = index % atlasColumns * tile, sy = Math.floor(index / atlasColumns) * tile;
+    const scale = Math.max(1, Math.floor(size / (modules + 8)));
+    const offset = Math.floor((size - modules * scale) / 2);
+    const context = qrCanvases[index].getContext('2d');
+    context.fillStyle = '#fff'; context.fillRect(0, 0, size, size);
+    context.imageSmoothingEnabled = false;
+    context.drawImage(atlas, sx, sy, modules, modules, offset, offset, modules * scale, modules * scale);
   }
 }
 new ResizeObserver(() => {
   if (mode === 'send') refreshSendLayout();
 }).observe($('send-stage'));
-function resetEncoder() {
-  encodeGeneration++; encodeWorker?.terminate(); encodeWorker = null;
-  encodePending = 0; displayQueue = []; displayedAt = [];
+function resetEncoder(rewind = false) {
+  if (rewind && transfer && pendingPositions.size) {
+    ({cursor, pass} = pendingPositions.values().next().value);
+    schedule = makeSchedule(transfer, pass);
+  }
+  encodeGeneration++;
+  for (const slot of encodeWorkers) slot.worker.terminate();
+  encodeWorkers = []; displayQueue = []; displayedAt = [];
+  encodeSequence = 0; readySequence = 0; completedEncodes.clear(); pendingPositions.clear();
 }
 function fillQueue() {
   if (!transfer) return;
-  if (!encodeWorker) {
-    const generation = encodeGeneration;
-    encodeWorker = new Worker('./encode-worker.js');
-    encodeWorker.onmessage = ({ data }) => {
-      if (generation !== encodeGeneration || data.generation !== encodeGeneration) return;
-      encodePending--;
-      if (data.error) { pauseSend(); resetEncoder(); message('send-message', `Code preparation failed: ${data.error}`, true); return; }
-      displayQueue.push(data);
-    };
-    encodeWorker.onerror = () => {
-      if (generation !== encodeGeneration) return;
-      pauseSend(); resetEncoder(); message('send-message', 'Code preparation could not start. Reload the app and try again.', true);
-    };
+  const generation = encodeGeneration;
+  const parallel = Math.min(4, Math.max(1, (navigator.hardwareConcurrency || 2) - 1));
+  const workerCount = effectiveCodeCount() >= 16 ? parallel : 1;
+  function fail(reason) {
+    if (generation !== encodeGeneration) return;
+    pauseSend(); resetEncoder(true); message('send-message', reason, true);
   }
-  // A bounded queue decouples display timing from QR mask search and encoding.
-  while (displayQueue.length + encodePending < (isAutoLayout() ? 2 : 6)) {
+  while (encodeWorkers.length < workerCount) {
+    const worker = new Worker('./encode-worker.js');
+    const slot = {worker, busy: false};
+    encodeWorkers.push(slot);
+    worker.onmessage = ({data}) => {
+      if (generation !== encodeGeneration || data.generation !== generation) return;
+      slot.busy = false;
+      if (data.error) { fail(`Code preparation failed: ${data.error}`); return; }
+      completedEncodes.set(data.sequence, data);
+      while (completedEncodes.has(readySequence)) {
+        displayQueue.push(completedEncodes.get(readySequence));
+        completedEncodes.delete(readySequence++);
+      }
+      if (running) fillQueue();
+    };
+    worker.onerror = () => fail('Code preparation could not start. Reload the app and try again.');
+  }
+  // A bounded window keeps memory and packet look-ahead stable. Parallel
+  // completion can arrive out of order; presentation follows sequence numbers.
+  const depth = Math.max(isAutoLayout() ? 2 : 6, workerCount + 2);
+  for (const slot of encodeWorkers) {
+    if (slot.busy || pendingPositions.size >= depth) continue;
+    const sequence = encodeSequence++;
+    pendingPositions.set(sequence, {cursor, pass});
     const items = [], labels = [];
     for (let i = 0; i < effectiveCodeCount(); i++) {
       if (cursor >= schedule.length) { pass++; cursor = 0; schedule = makeSchedule(transfer, pass); }
       const item = schedule.at ? schedule.at(cursor++) : schedule[cursor++]; items.push(item);
       labels.push(item[0] === 0 ? 'File info' : item[0] === 1 ? `Block ${item[1] + 1}` : 'Repair');
     }
-    encodePending++;
-    const generation = encodeGeneration, worker = encodeWorker, batchPass = pass + 1;
-    framesAt(transfer, items).then(resolved => {
-      if (generation === encodeGeneration && worker === encodeWorker) worker.postMessage({ generation, texts: resolved, label: labels.join(' + '), pass: batchPass });
-    }).catch(error => {
-      if (generation !== encodeGeneration) return;
-      pauseSend(); resetEncoder(); message('send-message', `Code preparation failed: ${error.message}`, true);
-    });
+    slot.busy = true;
+    const batchPass = pass + 1;
+    framesAt(transfer, items).then(texts => {
+      if (generation === encodeGeneration) slot.worker.postMessage({ generation, sequence, texts, label: labels.join(' + '), pass: batchPass });
+    }).catch(error => fail(`Code preparation failed: ${error.message}`));
   }
 }
 function tickSend(now) {
@@ -282,13 +330,17 @@ function tickSend(now) {
   if (now + 1 < nextDisplayAt) return;
   try {
     if (!displayQueue.length) { fillQueue(); return; }
-    const frame = displayQueue.shift(); displayModules = frame.codes; renderModules();
+    const frame = displayQueue.shift(); pendingPositions.delete(frame.sequence); displayModules = frame.codes; renderModules();
     show('qr-wrap'); show('empty-code', false);
     write('send-frame', frame.label);
     displayedAt.push(now); while (displayedAt.length > 1 && displayedAt[0] < now - 2000) displayedAt.shift();
     const fps = displayedAt.length > 1 ? Math.round(1000 * (displayedAt.length - 1) / (now - displayedAt[0])) : 0;
     write('send-loop', `PASS ${frame.pass}${fps ? ` · ${fps} FPS` : ''}`);
-    nextDisplayAt = now + 1000 / Number($('speed').value);
+    write('signal-fps', fps ? `${fps} FPS` : '— FPS');
+    const period = 1000 / Number($('speed').value);
+    // Keep fractional display deadlines instead of rounding every period up
+    // to an extra refresh. After a stall, resume without a catch-up burst.
+    nextDisplayAt = nextDisplayAt && now - nextDisplayAt < period ? nextDisplayAt + period : now + period;
     fillQueue();
   } catch (error) { pauseSend(); message('send-message', `Could not display the code: ${error.message}`, true); }
 }
@@ -304,7 +356,7 @@ function startSend() {
   running = true; $('density').disabled = true;
   write('send-start', 'Pause signal Ⅱ'); write('send-status', 'SIGNAL LIVE'); $('send-status').classList.add('live');
   message('send-message', 'Signal repeats automatically. Pause when the receiving device confirms the file is verified.');
-  nextDisplayAt = 0; displayedAt = [];
+  nextDisplayAt = 0; displayedAt = []; write('signal-fps', '— FPS');
   sendTimer = requestAnimationFrame(tickSend); syncWakeLock();
 }
 let notchTimer = 0, notchHovered = false, notchFocused = false;

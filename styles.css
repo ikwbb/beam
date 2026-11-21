@@ -32,3 +32,5 @@ body.signal-only #send-stage canvas{max-width:none;max-height:none}
 .stage:fullscreen .stage-toolbar,.stage:fullscreen .stage-bottom,.stage:fullscreen #exit-signal{display:none}
 .stage:fullscreen .qr-wrap{padding:0}
 .stage:fullscreen .qr-wrap canvas{max-width:none;max-height:none}
+
+#signal-fps{font-variant-numeric:tabular-nums;white-space:nowrap;min-width:44px;text-align:center}

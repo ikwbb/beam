@@ -21,3 +21,13 @@ RaptorQ. `vendor/raptorq.wasm` and the identical embedded binary in
 ## hash-wasm 4.12.0
 
 The unmodified SHA-256 UMD build in `sha256.umd.js` is bundled for incremental offline SHA-256. Copyright Dani Biro; MIT license in `HASH-WASM-LICENSE`. Upstream: https://github.com/Daninet/hash-wasm .
+
+
+## zxing-wasm 2.2.2 / ZXing-C++
+
+The reader-only ZXing build is used for screen capture. The JavaScript build's
+global binding is assigned explicitly for browser module workers; the WASM
+binary is unmodified. zxing-wasm is MIT (ZXING-WASM-LICENSE);
+ZXing-C++ is Apache-2.0 (ZXING-CPP-LICENSE). Upstream:
+https://github.com/Sec-ant/zxing-wasm/tree/v2.2.2 and
+https://github.com/zxing-cpp/zxing-cpp/tree/c0a7c6cd2165457c721c58045edd22ffee9624e9 .

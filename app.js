@@ -17,6 +17,7 @@ let encodeWorker = null, encodeGeneration = 0, encodePending = 0, displayQueue =
 let choosingDestination = false;
 let receiver = new Receiver(), stream = null, scanning = false, cameraPending = 0;
 let captureSource = 'camera', screenTimer = 0;
+let recentScreenScans = [];
 let decodeWorker = null, detector = null, decodeBusy = false, cameraGeneration = 0;
 let animation = 0, lastVideoTime = -1, lastScanAt = 0, finishPending = false, downloadUrl = null;
 let lastAcceptedAt = 0, wakeLock = null, wakeLockPending = false, displayModules = [];
@@ -371,7 +372,9 @@ $('fullscreen').onclick = () => {
 
 async function setupDecoder(generation) {
   let nativeDetector = null;
-  if (globalThis.BarcodeDetector) {
+  // The browser-native detector can silently return a partial set. Use one
+  // predictable multi-code decoder for screen captures on every OS.
+  if (captureSource !== 'screen' && globalThis.BarcodeDetector) {
     try {
       const formats = await BarcodeDetector.getSupportedFormats();
       if (formats.includes('qr_code')) nativeDetector = new BarcodeDetector({ formats: ['qr_code'] });
@@ -392,6 +395,16 @@ function createDecodeWorker(generation = cameraGeneration) {
       stopCamera(); message('receive-message', 'The QR decoder could not start. Use a current browser with WebAssembly enabled.', true); return;
     }
     if (scanning) {
+      if (captureSource === 'screen') {
+        const video = $('video'), now = performance.now();
+        recentScreenScans.push(now);
+        while (recentScreenScans.length > 1 && recentScreenScans[0] < now - 3000) recentScreenScans.shift();
+        const span = now - recentScreenScans[0];
+        const rate = span >= 500 ? ` · ${((recentScreenScans.length - 1) * 1000 / span).toFixed(1)} scans/s` : '';
+        const time = Number.isFinite(data.decodeMs) ? ` · ${Math.round(data.decodeMs)} ms` : '';
+        write('decoder-label', `${video.videoWidth}×${video.videoHeight} · ${data.decoder || 'QR'}${time}${rate}`);
+        $('decoder-label').title = `Captured video: ${video.videoWidth}×${video.videoHeight}. Scanned pixels: ${data.width}×${data.height}. Scans/s counts processed video frames, not the monitor refresh rate.`;
+      }
       updateDetections(data.codes || [], data.width, data.height);
       await Promise.all(data.texts.map(acceptFrame));
     }
@@ -418,7 +431,7 @@ async function startCamera(source = 'camera') {
     // Invoke directly from the click handler, before awaiting decoder setup.
     const device = $('camera-select').value;
     candidate = screen
-      ? await navigator.mediaDevices.getDisplayMedia({ audio: false, video: { frameRate: { ideal: 60 } } })
+      ? await navigator.mediaDevices.getDisplayMedia({ audio: false, video: { frameRate: { ideal: 60 }, resizeMode: { ideal: 'none' } } })
       : await navigator.mediaDevices.getUserMedia({ audio: false, video: {
         ...(device ? { deviceId: { exact: device } } : { facingMode: { ideal: 'environment' } }),
         width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 },
@@ -446,7 +459,7 @@ async function startCamera(source = 'camera') {
       show('camera-select', devices.length > 1); show('camera-label', devices.length > 1);
     } else { show('camera-select', false); show('camera-label', false); }
     if (track.readyState === 'ended') throw new Error(`${label} ended. Start it again to resume.`);
-    scanning = true; decodeBusy = false; lastVideoTime = -1; lastScanAt = 0;
+    scanning = true; decodeBusy = false; lastVideoTime = -1; lastScanAt = 0; recentScreenScans = [];
     write(screen ? 'screen-start' : 'camera-start', `Pause ${label} Ⅱ`);
     write('camera-status', 'LOOKING FOR SIGNAL'); $('camera-status').className = 'status-label live';
     message('receive-message', receiver.meta ? `${label} resumed. Previously received blocks are kept.` : screen ? 'Reading QR codes from the shared screen. Keep the sender’s codes visible in the captured surface.' : 'Point the camera at all codes on the sender’s screen.');
@@ -570,7 +583,7 @@ function scan(now) {
       if (scanCanvas.width !== width || scanCanvas.height !== height) { scanCanvas.width = width; scanCanvas.height = height; }
       scanContext.drawImage(video, 0, 0, width, height);
       const data = scanContext.getImageData(0, 0, width, height);
-      decodeWorker.postMessage({ buffer: data.data.buffer, width, height, generation }, [data.data.buffer]);
+      decodeWorker.postMessage({ buffer: data.data.buffer, width, height, generation, source: captureSource }, [data.data.buffer]);
     } catch {
       stopCamera(); message('receive-message', 'The camera frame could not be read. Resume the camera to try again; your progress is kept.', true);
     }

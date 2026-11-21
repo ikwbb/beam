@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { renderStandalone, scriptText } from '../build-standalone.mjs';
-import { prepareTransfer, makeSchedule, frameAt, Receiver } from '../protocol.js';
+import { prepareTransfer, makeSchedule, frameAt, Receiver, packet } from '../protocol.js';
 
 const saved = (await readFile(new URL('../standalone.html', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
 const workers = JSON.parse(saved.match(/<script id="beam-worker-sources" type="application\/json">([\s\S]*?)<\/script>/)[1]);
@@ -39,7 +39,7 @@ function workerContext(source) {
   const sandbox = {
     console, TextEncoder, TextDecoder, Uint8Array, Uint8ClampedArray, ArrayBuffer,
     Uint16Array, Uint32Array, Int8Array, Int16Array, Int32Array, Float32Array, Float64Array,
-    atob, btoa, location: { href: 'blob:null/standalone-worker' },
+    atob, btoa, performance, WebAssembly, URL, location: { href: 'blob:null/standalone-worker' },
     fetch: noNetwork, importScripts: noNetwork, XMLHttpRequest: noNetwork,
     postMessage: data => { reply = data; },
   };
@@ -190,3 +190,46 @@ test('fine display sizes decode at every density with pixelated scaling and 4px 
     }
   }
 });
+
+test('screen-specific QR scanning recovers a dense grid that a full-frame scan misses',async()=>{
+  const encode=workerContext(workers.encode),decode=workerContext(workers.decode);
+  let seed=4321;
+  const next=()=>{seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;return seed&255;};
+  const id=Uint8Array.of(1,2,3,4,5,6,7,8),count=21,size=1024;
+  const texts=Array.from({length:count},(_,esi)=>{
+    const payload=Uint8Array.from({length:size+4},next);new DataView(payload.buffer).setUint32(0,esi);
+    return packet(1,id,0,count,size,payload,3);
+  });
+  const {codes}=await encode({texts,generation:1});
+  const canvas=scaledScreenGrid(codes,7);
+  const baseline=await decode({...canvas,generation:1});
+  const result=await decode({...canvas,generation:1,source:'screen'});
+  const recovered=texts.filter(t=>result.texts.includes(t)).length;
+  assert.equal(result.decoder,'ZXing');
+  assert.ok(recovered>=19 && recovered>baseline.texts.length,`screen ${recovered}/21; full-frame ${baseline.texts.length}/21`);
+  assert.ok(result.codes.every(c=>c.points.length===4&&c.points.every(p=>p.x>=0&&p.x<canvas.width&&p.y>=0&&p.y<canvas.height)));
+});
+
+function scaledScreenGrid(codes,columns){
+  const backing=autoRaster(codes,columns,Math.max(...codes.map(q=>q.size+8))*2);
+  const src=new Uint8ClampedArray(backing.buffer);
+  // 2 physical pixels per module become about 1.3 in the captured frame.
+  const factor=2/3,w=Math.floor(backing.width*factor),h=Math.floor(backing.height*factor);
+  const width=1280,height=720,data=new Uint8ClampedArray(width*height*4);
+  const left=Math.floor((width-w)/2),top=Math.floor((height-h)/2);
+  for(let i=0;i<data.length;i+=4){data[i]=17;data[i+1]=25;data[i+2]=35;data[i+3]=255;}
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+    const sx=(x+.5)/factor-.5,sy=(y+.5)/factor-.5;
+    const ox=Math.floor(sx),oy=Math.floor(sy),u=sx-ox,v=sy-oy;
+    const get=(xx,yy)=>src[(Math.min(yy,backing.height-1)*backing.width+Math.min(xx,backing.width-1))*4];
+    const shade=(get(ox,oy)*(1-u)+get(ox+1,oy)*u)*(1-v)+(get(ox,oy+1)*(1-u)+get(ox+1,oy+1)*u)*v;
+    const i=((top+y)*width+left+x)*4;data[i]=data[i+1]=data[i+2]=shade;
+    // Re-create the dark 4 CSS pixel separators instead of a contiguous white panel.
+  }
+  const cell=Math.max(...codes.map(q=>q.size+8))*2,step=cell+4;
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+    if(Math.floor(x/factor)%step<cell&&Math.floor(y/factor)%step<cell)continue;
+    const i=((top+y)*width+left+x)*4;data[i]=17;data[i+1]=25;data[i+2]=35;
+  }
+  return {buffer:data.buffer,width,height};
+}

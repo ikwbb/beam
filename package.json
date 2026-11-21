@@ -1,6 +1,6 @@
 {
   "name": "beam-visual-transfer",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "private": true,
   "description": "Browser-only optical file transfer with loss recovery and integrity verification",
   "type": "module",
@@ -12,7 +12,8 @@
     "benchmark:codec": "node tests/raptorq-benchmark.mjs",
     "test:large": "node --expose-gc tests/raptorq-large.mjs",
     "test:browser": "node tests/browser-smoke.mjs",
-    "test:disk-browser": "node tests/disk-browser.mjs"
+    "test:disk-browser": "node tests/disk-browser.mjs",
+    "test:screen-browser": "node tests/screen-browser.mjs"
   },
   "engines": {
     "node": ">=20"

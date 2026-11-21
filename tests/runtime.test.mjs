@@ -517,3 +517,15 @@ test('large transfer prompts for a location and retries final save without resca
  assert.equal(app.element('camera-status').textContent,'FILE VERIFIED');
  assert.equal(app.element('percent').textContent,'100%');
 });
+
+test('screen capture bypasses native QR detection and exposes the actual capture dimensions',async()=>{
+  let nativeCalls=0;
+  const app=harness({display:async()=>cameraStream(),detect:async()=>{nativeCalls++;return [];}});
+  app.element('video').videoWidth=3840;app.element('video').videoHeight=2160;
+  app.click('receive-tab');app.click('screen-start');await flush();app.scan();
+  assert.equal(nativeCalls,0);
+  const worker=app.workers[0],request=worker.messages[0];
+  assert.equal(request.source,'screen');assert.equal(request.width,3840);assert.equal(request.height,2160);
+  await worker.onmessage({data:{generation:request.generation,width:3840,height:2160,texts:[],codes:[],decoder:'ZXing',decodeMs:51}});
+  assert.match(app.element('decoder-label').textContent,/3840×2160 · ZXing · 51 ms/);
+});

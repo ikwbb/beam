@@ -1,4 +1,4 @@
-import { prepareTransfer, makeSchedule, framesAt, Receiver } from './codec-client.js';
+import { prepareTransfer, makeSchedule, framesAt, Receiver, cancelPreparation } from './codec-client.js';
 
 const $ = id => document.getElementById(id);
 const show = (id, visible = true) => { $(id).hidden = !visible; };
@@ -6,13 +6,15 @@ const write = (id, text) => { const element = $(id); if (element.textContent !==
 function message(id, text, error = false) { write(id, text); $(id).classList.toggle('error', error); }
 function format(bytes) {
   if (bytes < 1024) return `${bytes} B`;
-  return `${(bytes / (bytes < 1048576 ? 1024 : 1048576)).toFixed(1)} ${bytes < 1048576 ? 'KiB' : 'MiB'}`;
+  const power=Math.min(4,Math.floor(Math.log2(bytes)/10));
+  return `${(bytes / 1024**power).toFixed(1)} ${['B','KiB','MiB','GiB','TiB'][power]}`;
 }
 let mode = 'send';
 let inputMode = 'file';
 let file = null, transfer = null, running = false, preparing = false, preparation = 0;
 let schedule = [], cursor = 0, pass = 0, sendTimer = 0, nextDisplayAt = 0;
 let encodeWorker = null, encodeGeneration = 0, encodePending = 0, displayQueue = [], displayedAt = [];
+let choosingDestination = false;
 let receiver = new Receiver(), stream = null, scanning = false, cameraPending = 0;
 let captureSource = 'camera', screenTimer = 0;
 let decodeWorker = null, detector = null, decodeBusy = false, cameraGeneration = 0;
@@ -70,7 +72,9 @@ async function chooseFile(chosen, kind = 'file') {
   write('send-size', '—'); write('send-blocks', '—'); write('send-rate', '—');
   write('send-eta', 'Choose content to estimate transfer time.');
   try {
-    const prepared = await prepareTransfer(chosen, Number($('density').value), kind);
+    const prepared = await prepareTransfer(chosen, Number($('density').value), kind, (read,total) => {
+      if (generation === preparation) message('send-message', `Checking large file: ${format(read)} / ${format(total)}…`);
+    });
     if (generation !== preparation) { prepared.dispose?.().catch?.(() => {}); return; }
     transfer = prepared; file = chosen; pass = 0; cursor = 0;
     schedule = makeSchedule(transfer);
@@ -113,7 +117,7 @@ $('code-count').onchange = () => {
   }
 };
 function invalidateInput() {
-  pauseSend(); preparation++; resetEncoder(); transfer?.dispose?.().catch?.(() => {}); transfer = null; file = null; preparing = false;
+  pauseSend(); preparation++; if(preparing && typeof cancelPreparation === 'function') cancelPreparation()?.catch(() => {}); resetEncoder(); transfer?.dispose?.().catch?.(() => {}); transfer = null; file = null; preparing = false;
   displayModules = []; show('qr-wrap', false); show('empty-code');
   $('dropzone').classList.remove('busy'); $('density').disabled = false;
   write('send-size', '—'); write('send-blocks', '—'); write('send-rate', '—');
@@ -399,7 +403,7 @@ function createDecodeWorker(generation = cameraGeneration) {
   };
 }
 async function startCamera(source = 'camera') {
-  if (cameraPending || scanning || receiver.verified || finishPending || mode !== 'receive' || (document.hidden && source === 'camera')) return;
+  if ((receiver.needsDisk && (!receiver.diskReady || receiver.complete)) || cameraPending || scanning || receiver.verified || finishPending || mode !== 'receive' || (document.hidden && source === 'camera')) return;
   const screen = source === 'screen', label = screen ? 'screen capture' : 'camera';
   if (!isSecureContext || !navigator.mediaDevices?.[screen ? 'getDisplayMedia' : 'getUserMedia']) {
     message('receive-message', `This browser cannot access ${label} here. Use a supported desktop browser over HTTPS or localhost.`, true); return;
@@ -469,7 +473,7 @@ async function startCamera(source = 'camera') {
   }
 }
 function syncCaptureButtons() {
-  for (const id of ['camera-start', 'screen-start']) $(id).disabled = receiver.verified || finishPending;
+  for (const id of ['camera-start', 'screen-start']) $(id).disabled = Boolean(receiver.verified || finishPending || (receiver.needsDisk && (!receiver.diskReady || receiver.complete)));
 }
 function stopCamera() {
   scanning = false; cameraPending = 0; cameraGeneration++; cancelAnimationFrame(animation); clearTimeout(screenTimer); decodeBusy = false;
@@ -582,6 +586,14 @@ async function acceptFrame(text) {
     return;
   }
   if (current !== receiver || finishPending || receiver.verified) return;
+  if (receiver.needsDisk && !receiver.diskReady) {
+    if (scanning || cameraPending) stopCamera();
+    updateReceiver(); syncCaptureButtons(); write('camera-status', 'CHOOSE DESTINATION');
+    message('receive-message', typeof window.showSaveFilePicker === 'function'
+      ? 'Choose where to save the large file, then resume scanning. Keep roughly twice the file size free for staging and saving.'
+      : 'Large files need desktop Chrome or Edge on localhost or HTTPS.');
+    return;
+  }
   if (result === 'rejected') { write('receive-note', 'A damaged frame was ignored. New repair codes will fill the gap.'); return; }
   if (result === 'foreign') { message('receive-message', 'A different transfer is in view. Resume the original signal or clear this transfer.', true); return; }
   if (result === 'waiting') { updateReceiver(); write('camera-status', 'SIGNAL FOUND'); message('receive-message', 'Signal found. Waiting for file information, which repeats automatically.'); return; }
@@ -602,41 +614,68 @@ function updateReceiver() {
   const elapsed = (Date.now() - r.startedAt) / 1000;
   write('receive-rate', r.meta && elapsed > 0 ? `${format(Math.round(bytes / Math.max(1, elapsed)))}/s` : '—');
   const remaining = r.meta ? Math.max(0, r.meta.packedSize - bytes) : 0;
-  write('receive-eta', r.verified ? 'Complete' : !r.meta ? 'Waiting for a file.' : r.complete ? 'Verifying file…' : bytes > 0 && elapsed > 0 ? `Estimated remaining: ${duration(remaining * elapsed / bytes)}` : 'Estimating remaining time…');
-  $('clear-receive').disabled = !r.meta && r.pending.length === 0;
+  write('receive-eta', r.verified ? 'Complete' : !r.meta ? 'Waiting for a file.' : r.saveRetry && !finishPending ? 'Waiting for a save location.' : r.complete ? 'Verifying file…' : bytes > 0 && elapsed > 0 ? `Estimated remaining: ${duration(remaining * elapsed / bytes)}` : 'Estimating remaining time…');
+  $('clear-receive').disabled = finishPending || (!r.meta && r.pending.length === 0);
+  show('choose-destination', !finishPending && r.needsDisk === true && (!r.diskReady || r.saveRetry === true) && typeof window.showSaveFilePicker === 'function');
 }
+$('choose-destination').onclick = async () => {
+  const current=receiver;
+  if(choosingDestination||finishPending||!current.needsDisk||(current.diskReady&&!current.saveRetry))return;
+  choosingDestination=true; $('choose-destination').disabled=true;
+  try {
+    const destination=await window.showSaveFilePicker({suggestedName:current.meta.name.replace(/[\\/\u0000-\u001f]/g,'_')});
+    if(current!==receiver)return;
+    await current.setDestination(destination);
+    if(current!==receiver)return;
+    if(current.complete){await completeReceive();return;}
+    updateReceiver();syncCaptureButtons();
+    message('receive-message','Destination selected. Resume the camera or screen capture.');
+  } catch(error){
+    if(current===receiver&&error.name!=='AbortError')message('receive-message',error.message,true);
+  } finally {
+    choosingDestination=false;$('choose-destination').disabled=false;
+  }
+};
 async function completeReceive() {
   finishPending = true; const completed = receiver;
-  stopCamera(); $('camera-start').disabled = true;
-  write('camera-status', 'VERIFYING FILE'); message('receive-message', 'All blocks received. Checking the complete file…');
+  stopCamera(); updateReceiver();
+  write('camera-status', 'VERIFYING FILE'); message('receive-message', completed.diskReady ? 'Checking SHA-256, then saving to the selected location…' : 'All blocks received. Checking the complete file…');
   try {
     const bytes = await completed.finish();
     if (receiver !== completed) return;
-    if (downloadUrl) URL.revokeObjectURL(downloadUrl);
-    downloadUrl = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
-    $('download').href = downloadUrl;
-    $('download').download = completed.meta.name.replace(/[\\/\u0000-\u001f]/g, '_');
-    show('download'); show('verified');
-    if (completed.meta.kind === 'text') {
-      $('received-text').value = new TextDecoder().decode(bytes);
-      show('received-text-wrap'); write('copy-text', 'Copy text');
+    if (bytes !== null) {
+      if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+      downloadUrl = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+      $('download').href = downloadUrl;
+      $('download').download = completed.meta.name.replace(/[\\/\u0000-\u001f]/g, '_');
+      show('download');
+      if (completed.meta.kind === 'text') {
+        $('received-text').value = new TextDecoder().decode(bytes);
+        show('received-text-wrap'); write('copy-text', 'Copy text');
+      }
     }
+    show('verified');
     updateReceiver();
     write('receive-eta', 'Complete');
     write('camera-status', 'FILE VERIFIED'); $('camera-status').className = 'status-label success';
     $('camera-empty').querySelector('h3').textContent = 'Every piece, in place.';
-    $('camera-empty').querySelector('p').textContent = 'Your file passed verification and is ready to save.';
+    $('camera-empty').querySelector('p').textContent = bytes === null ? 'Your verified file was saved to the selected location.' : 'Your file passed verification and is ready to save.';
     write('receive-activity', 'COMPLETE'); write('camera-start', 'Transfer complete ✓');
-    message('receive-message', 'Your file is ready. You can stop the sender now.');
+    message('receive-message', bytes === null ? 'Verified and saved. You can stop the sender now.' : 'Your file is ready. You can stop the sender now.');
     write('receive-note', `SHA-256 verified · ${format(completed.meta.size)} · ${completed.recovered} blocks recovered with repair codes`);
     $('receive-note').title = completed.meta.sha256;
   } catch (error) {
     if (receiver !== completed) return;
+    if(completed.saveRetry){
+      message('receive-message', `Could not save: ${error.message} Choose another location to save without rescanning.`, true);
+      write('camera-status', 'SAVE FAILED'); write('receive-activity', 'NOT SAVED');
+      return;
+    }
     message('receive-message', error.message || 'The file did not pass verification. Clear this transfer and try again.', true);
     write('camera-status', 'VERIFICATION FAILED'); write('receive-activity', 'NOT SAVED');
     write('camera-start', 'Clear transfer to retry'); $('camera-start').disabled = true;
     write('receive-note', 'No download was created because the file did not pass verification.');
-  } finally { if (receiver === completed) finishPending = false; }
+  } finally { if (receiver === completed) { finishPending = false; updateReceiver(); } }
 }
 function resetReceiver() {
   stopCamera(); receiver.dispose?.().catch?.(() => {}); receiver = new Receiver(); finishPending = false;
@@ -652,6 +691,7 @@ function resetReceiver() {
   updateReceiver();
 }
 $('clear-receive').onclick = () => {
+  if (finishPending) return;
   if (receiver.collected && !receiver.verified && !confirm('Clear the pieces collected for this file?')) return;
   resetReceiver();
 };

@@ -489,3 +489,31 @@ test('a cancelled preparation result is disposed instead of being retained',asyn
  app.evaluate(`invalidateInput();resolvePreparation({dispose:async()=>{globalThis.disposalCount++;}});`);
  await choose;await flush();assert.equal(app.evaluate('disposalCount'),1);assert.equal(app.evaluate('transfer'),null);
 });
+
+test('large transfer prompts for a location and retries final save without rescanning',async()=>{
+ const receiver={meta:{name:'huge.bin',packedSize:24*2**30,size:24*2**30},needsDisk:true,diskReady:false,
+  pending:[],count:10,collected:0,receivedBytes:0,recovered:0,startedAt:Date.now(),
+  async accept(){return 'manifest';},
+  async setDestination(handle){assert.equal(handle.name,'fixture');this.diskReady=true;},
+  async finish(){
+   if(!this.saveRetry){this.saveRetry=true;throw Error('Destination full');}
+   this.saveRetry=false;this.verified=true;return null;
+  }
+ };
+ const app=harness({receiver});
+ app.evaluate(`window.showSaveFilePicker=async()=>({name:'fixture'});`);
+ await app.evaluate(`acceptFrame('B3:INFO');`);
+ assert.equal(app.element('choose-destination').hidden,false);
+ assert.equal(app.element('camera-start').disabled,true);
+ await app.click('choose-destination');
+ assert.equal(app.element('choose-destination').hidden,true);
+ assert.equal(app.element('camera-start').disabled,false);
+ receiver.complete=true;receiver.collected=10;
+ await app.evaluate('completeReceive();');
+ assert.equal(app.element('choose-destination').hidden,false);
+ assert.equal(app.element('camera-status').textContent,'SAVE FAILED');
+ assert.equal(app.element('percent').textContent,'99%');
+ await app.click('choose-destination');
+ assert.equal(app.element('camera-status').textContent,'FILE VERIFIED');
+ assert.equal(app.element('percent').textContent,'100%');
+});

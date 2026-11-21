@@ -1,0 +1,14 @@
+[
+  {
+    "size": 135266321,
+    "loss": 0.3,
+    "verified": true,
+    "frames": 271845,
+    "passes": 2,
+    "prepareMs": 584.8,
+    "wallMs": 28955.8,
+    "cpuMs": 32114.508,
+    "wasmHighWaterMiB": 86.3125,
+    "peakRssMiB": 588.4
+  }
+]

@@ -78,6 +78,7 @@
         <p id="receive-eta" class="hint" role="status">Waiting for a file.</p>
         <div class="receive-progress"><div class="progress-title"><span id="receive-title">Waiting for a file</span><strong id="percent">0%</strong></div><progress id="progress" value="0" max="100" aria-label="Received pieces">0%</progress><div class="progress-detail"><span id="received-count">0 pieces collected</span><button id="clear-receive" class="text-button" disabled>Clear</button></div></div>
         <div id="verified" class="verified" hidden><span class="verified-icon">✓</span><div><strong>File verified</strong><p>The SHA-256 checksum matches.</p></div></div>
+        <button id="choose-destination" class="primary" hidden>Choose save location ↗</button>
         <a id="download" class="primary download" hidden>Save verified file <span aria-hidden="true">↓</span></a>
         <div id="received-text-wrap" hidden><label class="field-label" for="received-text">Verified text</label><textarea id="received-text" readonly rows="5"></textarea><button id="copy-text" class="secondary">Copy text</button></div>
         <p class="hint">You can pause either input and resume. Green boxes mark Beam codes; amber boxes mark other QR codes. Keep this tab open to retain your progress.</p>

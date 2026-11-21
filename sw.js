@@ -1,14 +1,14 @@
 // Bump this version whenever a bundled asset changes. Each release stays together
 // until its tabs close, so an update cannot replace a worker during a transfer.
 const CACHE_PREFIX = `beam:${self.registration.scope}:`;
-const CACHE = `${CACHE_PREFIX}v14`;
+const CACHE = `${CACHE_PREFIX}v15`;
 const HOME = new URL('./', self.registration.scope).href;
 const INDEX = new URL('./index.html', HOME).href;
 const ASSETS = [
   './index.html', './styles.css', './app.js', './protocol.js',
   './encode-worker.js', './decode-worker.js', './decoder.js',
   './codec-worker.js', './codec-client.js', './raptor-protocol.js', './raptor-wasm.js', './vendor/raptorq.wasm',
-  './vendor/qrcode.js', './vendor/zbar.mjs',
+  './disk-transfer.js', './vendor/sha256.umd.js', './vendor/qrcode.js', './vendor/zbar.mjs',
 ].map(path => new URL(path, HOME).href);
 
 self.addEventListener('install', event => {

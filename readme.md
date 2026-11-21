@@ -9,7 +9,7 @@ A small, browser-only application that moves files and pasted text from a displa
 3. Start the signal. Keep the whole code in view. Use fullscreen or move closer if necessary.
 4. Wait for **File verified**, then press **Save verified file**. For pasted text, you can also read and copy the verified text. Pause the sender manually afterward.
 
-The sender repeats indefinitely. The receiver retains valid blocks across camera pauses and mode changes. A refresh or closed tab loses this in-memory progress. The sender has no feedback channel, so it cannot automatically know when the receiver has finished.
+The sender repeats indefinitely. The receiver retains valid blocks across camera pauses and mode changes. A refresh or closed tab loses transfer progress. The sender has no feedback channel, so it cannot automatically know when the receiver has finished.
 
 Start with the defaults: Auto layout, high density, 20 fps. Auto fills the available webpage at the selected QR size, with no eighteen-code cap. Every gap between QR canvases is exactly 4 CSS pixels, in both auto and manual layouts. Display sizes adjust in 8px steps instead of snapping to a whole QR-width multiple. Each canvas uses an integer-module backing raster and pixelated display scaling, retaining its four-module quiet zone without redundant slot padding. All canvases have equal square dimensions, even when QR versions differ. Manual counts are **1, 2, 4, 6, 8, 15, or 18**; 2 uses one row, 4/6/8 use two rows, and 15/18 use three rows. Auto and manual layouts with four or more codes hide other page elements and use the webpage without outer padding. The expand button also fills the webpage. No browser fullscreen API is used: press **F11** yourself if desired. Pause/exit, Esc, and **− / +** share a 30px-high notch centred at the bottom edge with zero bottom margin. The notch slides away after 1.5 seconds idle; hovering or tapping the bottom edge reveals it. Hovering the controls or focusing them with the keyboard keeps it open. Esc remains available while the notch is hidden. **− / +** adjusts QR size by 8px per click; **Pause & exit** or **Esc** restores the controls. Resizing, including F11 and browser zoom, preserves the running transfer and updates the count and time estimate. Changing density or editing text prepares a new transfer; clear the old transfer on the receiver first. Changing speed, code count, or pausing preserves the transfer identity.
 
@@ -21,7 +21,7 @@ Screen capture requests video only. Use desktop Chrome or Edge over HTTPS or loc
 
 ## File size and transfer time
 
-There is no fixed 10 MiB or 128 MiB file cap. Preparing, hashing, compressing, and verifying files currently uses memory, so actual capacity depends on the browser and device. B3 uses 32-bit source-object addresses and 24-bit RFC6330 symbol IDs. Large-file capability still depends on memory: this release has verified 129 MiB incompressible files under loss, without imposing a new product size limit.
+Files above 128 MiB use disk mode automatically: the sender reads and hashes bounded slices, skips whole-file gzip, and the receiver stages blocks on disk. Use the new Beam on both devices. On desktop Chrome or Edge over localhost or HTTPS, scan the first file information QR, select **Choose save location**, then resume scanning. The file is SHA-256 checked before saving. Allow browser storage quota and roughly twice the file size in free disk space when staging and saving share a disk. See [large-file instructions](docs/DISK-TRANSFER.md).
 
 After preparation, the sender shows a minimum estimate for one pass, based on the compressed payload, manifest frames, selected FPS, and code count. This updates when speed or code count changes; it assumes every displayed code is decoded. The receiver shows estimated remaining time using useful collected packed bytes and elapsed time, including pauses. Missed frames and decode speed can make actual transfer longer.
 
@@ -81,7 +81,7 @@ a 32 MiB source-data LRU budget; solved decoders release their Rust state.
 Useful-symbol progress is an estimate, and caps at **99%** until the whole file
 has been decoded, decompressed, size checked and SHA-256 verified. Failed
 verification never enables a download or displays 100%. Duplicate packets do
-not advance progress. Transfer contents remain in memory until replaced or cleared.
+not advance progress. Small transfers stay in memory. Large transfers use private disk staging, which is cleared after verified save.
 
 ## Validation and performance
 
@@ -109,8 +109,8 @@ baseline is the top-level `legacy-protocol.js`.
 
 The sender has no feedback path. It therefore repairs every object even when
 some are already decoded, and a receiver joining after the systematic pass
-must collect enough repair symbols. QR rendering/scanning and browser memory
-can limit real throughput independently of codec efficiency. SHA-256 checks
+must collect enough repair symbols. QR rendering/scanning, disk and browser limits
+can affect real throughput independently of codec efficiency. SHA-256 checks
 integrity against transmitted metadata; it does not authenticate the sender or
 encrypt the optical channel.
 

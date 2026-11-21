@@ -50,7 +50,7 @@ function removeImport(source, path) {
 export const scriptText = source => source.replace(/<(\/script|script|!--)/gi, '\\x3c$1');
 
 export async function renderStandalone() {
-  const paths = ['index.html', 'styles.css', 'app.js', 'protocol.js', 'codec-client.js', 'codec-worker.js', 'raptor-protocol.js', 'raptor-wasm.js', 'codec/raptorq/LICENSE', 'encode-worker.js', 'decode-worker.js', 'decoder.js', 'vendor/qrcode.js', 'vendor/zbar.mjs', 'LICENSE', 'REFERENCE-LICENSE', 'vendor/QRCODE-LICENSE', 'vendor/ZBAR-LICENSE', 'vendor/THIRD-PARTY-NOTICES.md', 'vendor/source/README.md'];
+  const paths = ['index.html', 'styles.css', 'app.js', 'protocol.js', 'codec-client.js', 'codec-worker.js', 'raptor-protocol.js', 'raptor-wasm.js', 'disk-transfer.js', 'vendor/sha256.umd.js', 'vendor/HASH-WASM-LICENSE', 'codec/raptorq/LICENSE', 'encode-worker.js', 'decode-worker.js', 'decoder.js', 'vendor/qrcode.js', 'vendor/zbar.mjs', 'LICENSE', 'REFERENCE-LICENSE', 'vendor/QRCODE-LICENSE', 'vendor/ZBAR-LICENSE', 'vendor/THIRD-PARTY-NOTICES.md', 'vendor/source/README.md'];
   const values = await Promise.all(paths.map(read));
   const sources = Object.fromEntries(paths.map((path, i) => [path, values[i]]));
   const qr = stripSourceMaps(sources['vendor/qrcode.js']);
@@ -61,7 +61,10 @@ export async function renderStandalone() {
   const rqProtocol = removeImport(sources['raptor-protocol.js'], './protocol.js');
   const rqCodec = removeImport(rqProtocol.code, './raptor-wasm.js');
   const codecWorker = removeImport(sources['codec-worker.js'], './raptor-protocol.js');
-  const codecSource = `const { ${rqProtocol.names} } = ${classicModule(sources['protocol.js'], 'protocol.js')};\nconst { ${rqCodec.names} } = ${classicModule(sources['raptor-wasm.js'], 'raptor-wasm.js')};\nconst { ${codecWorker.names} } = ${classicModule(rqCodec.code, 'raptor-protocol.js')};\n${codecWorker.code}`;
+  const rqDisk = removeImport(rqCodec.code, './disk-transfer.js');
+  const workerDisk = removeImport(codecWorker.code, './disk-transfer.js');
+  const diskSource = replaceOnce(sources['disk-transfer.js'], /^import '\.\/vendor\/sha256\.umd\.js';\r?\n/, '', 'disk hash dependency');
+  const codecSource = `${stripSourceMaps(sources['vendor/sha256.umd.js'])}\nconst { ${rqDisk.names}, ${workerDisk.names} } = ${classicModule(diskSource, 'disk-transfer.js')};\nconst { ${rqProtocol.names} } = ${classicModule(sources['protocol.js'], 'protocol.js')};\nconst { ${rqCodec.names} } = ${classicModule(sources['raptor-wasm.js'], 'raptor-wasm.js')};\nconst { ${codecWorker.names} } = ${classicModule(rqDisk.code, 'raptor-protocol.js')};\n${workerDisk.code}`;
   const workers = { encode: encoder, decode: decoding, codec: codecSource };
   for (const [name, code] of Object.entries(workers)) new vm.Script(code, { filename: `${name}-worker.js` });
 
@@ -90,7 +93,7 @@ write('offline-state', 'Ready offline · standalone file');
   html = replaceOnce(html, /\s*<script src="\.\/vendor\/qrcode\.js" defer><\/script>/g, '', 'QR script');
   html = replaceOnce(html, /\s*<script type="module" src="\.\/app\.js"><\/script>/g, '', 'app script');
   html = replaceOnce(html, /<a href="\.\/" class="brand"/g, '<a href="#" class="brand"', 'home link');
-  const licenses = ['codec/raptorq/LICENSE', 'LICENSE', 'REFERENCE-LICENSE', 'vendor/QRCODE-LICENSE', 'vendor/ZBAR-LICENSE', 'vendor/THIRD-PARTY-NOTICES.md', 'vendor/source/README.md']
+  const licenses = ['codec/raptorq/LICENSE', 'vendor/HASH-WASM-LICENSE', 'LICENSE', 'REFERENCE-LICENSE', 'vendor/QRCODE-LICENSE', 'vendor/ZBAR-LICENSE', 'vendor/THIRD-PARTY-NOTICES.md', 'vendor/source/README.md']
     .map(path => `<h3>${path}</h3><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${escapeHTML(sources[path])}</pre>`).join('\n');
   const notices = `<details class="help"><summary>Open-source licenses and decoder source</summary><div class="help-content"><p>This portable file is generated with <code>node build-standalone.mjs</code> from Beam's application sources. To modify or replace its LGPL decoder, replace <code>vendor/zbar.mjs</code> and rebuild. Reverse engineering for debugging library modifications is not restricted.</p><p>Corresponding decoder sources and build instructions ship in <code>vendor/source/</code> with the Beam source distribution. They are also available upstream: <a href="https://github.com/undecaf/zbar-wasm/tree/c04ab59682681e27a24b36b36084806437a5d224">zbar-wasm 0.11.0</a> and <a href="https://github.com/mchehab/zbar/tree/0.23.90">ZBar 0.23.90</a>. Keep the source distribution and its license notices together when redistributing Beam.</p>${licenses}</div></details>`;
   html = replaceOnce(html, /<\/main>/g, `${notices}\n</main>`, 'main closing tag');

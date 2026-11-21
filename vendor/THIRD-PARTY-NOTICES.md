@@ -17,3 +17,7 @@ The unmodified crate source is distributed under `codec/raptorq/`.
 `codec/src/lib.rs` is Beam's small memory/handle ABI, not a reimplementation of
 RaptorQ. `vendor/raptorq.wasm` and the identical embedded binary in
 `raptor-wasm.js` are compiled from that source. No runtime download is needed.
+
+## hash-wasm 4.12.0
+
+The unmodified SHA-256 UMD build in `sha256.umd.js` is bundled for incremental offline SHA-256. Copyright Dani Biro; MIT license in `HASH-WASM-LICENSE`. Upstream: https://github.com/Daninet/hash-wasm .
